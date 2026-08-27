@@ -7,8 +7,12 @@ WORKDIR /app
 COPY server.js /app/server.js
 COPY public /app/public
 
+RUN mkdir -p /data \
+    && chown -R node:node /app /data
+
 ENV NODE_ENV=production
 ENV PORT=8080
+ENV DASHBOARD_NODE_DATA_FILE=/data/nodes.json
 
 EXPOSE 8080
 
