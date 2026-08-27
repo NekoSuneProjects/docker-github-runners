@@ -7,9 +7,12 @@ RUN apk add --no-cache ca-certificates unzip su-exec \
 WORKDIR /app
 COPY server-v3.js /app/server.js
 COPY server-realtime.js /app/server-realtime.js
+COPY server-control.js /app/server-control.js
 COPY public /app/public
 COPY entrypoint.sh /usr/local/bin/dashboard-entrypoint.sh
-RUN chmod 0755 /usr/local/bin/dashboard-entrypoint.sh
+
+RUN sed -i 's#</body>#<script src="/runner-controls.js"></script></body>#' /app/public/index-v3.html \
+    && chmod 0755 /usr/local/bin/dashboard-entrypoint.sh
 
 ENV NODE_ENV=production
 ENV PORT=8080
@@ -22,4 +25,4 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
 STOPSIGNAL SIGTERM
 USER root
 ENTRYPOINT ["/usr/local/bin/dashboard-entrypoint.sh"]
-CMD ["node", "/app/server-realtime.js"]
+CMD ["node", "/app/server-control.js"]
