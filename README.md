@@ -41,6 +41,69 @@ It also includes toolchains for producing:
 - PHP / Composer
 - Git LFS
 
+## Runner dashboard
+
+The Compose stack includes a web dashboard for monitoring the organization and
+self-hosted workers without having to jump between GitHub Actions pages.
+
+The dashboard shows:
+
+- total, online, idle, and busy self-hosted workers
+- worker names, operating systems, labels, and current busy state
+- queued and running jobs with the runner they are assigned to
+- recent workflow runs across multiple repositories
+- build status, branch, actor, workflow name, run number, and timestamps
+- individual jobs and every GitHub Actions step
+- failed steps highlighted separately
+- GitHub workflow log archives with errors and warnings highlighted
+- log searching and an `Errors only` filter
+- local GitHub runner `_diag` logs from the backend while the runner is active
+- automatic dashboard refresh
+
+By default it is exposed only on the host loopback interface:
+
+```text
+http://127.0.0.1:8080
+```
+
+This is intentional so it can be placed behind Nginx Proxy Manager, Caddy, a
+Cloudflare Tunnel, or another authenticated reverse proxy.
+
+Dashboard `.env` options:
+
+```env
+DASHBOARD_BIND=127.0.0.1
+DASHBOARD_PORT=8080
+DASHBOARD_REPOS=
+DASHBOARD_MAX_REPOS=12
+DASHBOARD_REFRESH_SECONDS=10
+DASHBOARD_USERNAME=admin
+DASHBOARD_PASSWORD=CHANGE_ME_TO_A_LONG_RANDOM_PASSWORD
+```
+
+`DASHBOARD_REPOS` can contain a comma-separated list such as:
+
+```env
+DASHBOARD_REPOS=docker-github-runners,CastNexus,NekoLive
+```
+
+When it is blank, the dashboard automatically monitors the most recently
+pushed repositories in `GITHUB_ORG` up to `DASHBOARD_MAX_REPOS`.
+
+The dashboard can reuse `ACCESS_TOKEN`, or you can provide a separate read-only
+token:
+
+```env
+GITHUB_DASHBOARD_TOKEN=github_pat_XXXXXXXXXXXXXXXXXXXXXXXX
+```
+
+For a fine-grained token, the runner registration needs the organization
+`Self-hosted runners: Read and write` permission. To read workflow runs, jobs,
+and downloadable logs, also give the selected repositories `Actions: Read`.
+
+Workflow logs can contain sensitive output, so enable dashboard Basic Auth or
+keep it behind an authenticated reverse proxy before exposing it publicly.
+
 ## Automatic Docker socket permissions
 
 You do **not** need to manually configure a Docker group ID.
@@ -114,19 +177,25 @@ Build:
 docker compose build
 ```
 
-Start:
+Start the runner and dashboard:
 
 ```bash
 docker compose up -d
 ```
 
-Logs:
+Runner logs:
 
 ```bash
 docker compose logs -f github-builder
 ```
 
-A successful startup should include output similar to:
+Dashboard logs:
+
+```bash
+docker compose logs -f dashboard
+```
+
+A successful runner startup should include output similar to:
 
 ```text
 Docker Socket Auto Configuration
@@ -140,8 +209,7 @@ Docker Socket Permission Check
 
 ## Updating an existing installation
 
-After pulling changes to this repository, recreate the container because the
-Dockerfile startup user and socket setup changed:
+After pulling changes to this repository, recreate the containers:
 
 ```bash
 git pull
@@ -157,6 +225,12 @@ docker compose exec github-builder docker version
 ```
 
 You should see both the Docker `Client` and `Server` sections.
+
+Check dashboard health:
+
+```bash
+curl -u "$DASHBOARD_USERNAME:$DASHBOARD_PASSWORD" http://127.0.0.1:8080/api/health
+```
 
 ## Build one image for AMD64 and ARM64
 
@@ -344,3 +418,7 @@ Mounting:
 
 gives workflows powerful access to the Docker host. Only allow trusted
 repositories and trusted workflows to use this runner.
+
+The dashboard intentionally does not mount the Docker socket. It receives
+runner status and workflow information from GitHub's API and has read-only
+access to the shared runner diagnostic log volume.
