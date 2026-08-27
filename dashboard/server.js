@@ -2,6 +2,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const crypto = require('crypto');
 const { execFile } = require('child_process');
 
 const PORT = Number(process.env.PORT || 8080);
@@ -10,43 +11,210 @@ const GITHUB_TOKEN = process.env.GITHUB_DASHBOARD_TOKEN || process.env.ACCESS_TO
 const DASHBOARD_REPOS = (process.env.DASHBOARD_REPOS || '').split(',').map(v => v.trim()).filter(Boolean);
 const MAX_REPOS = Math.max(1, Math.min(Number(process.env.DASHBOARD_MAX_REPOS || 12), 50));
 const REFRESH_SECONDS = Math.max(5, Math.min(Number(process.env.DASHBOARD_REFRESH_SECONDS || 10), 120));
-const BASIC_USER = process.env.DASHBOARD_USERNAME || '';
-const BASIC_PASS = process.env.DASHBOARD_PASSWORD || '';
+const LOGIN_USER = process.env.DASHBOARD_USERNAME || '';
+const LOGIN_PASS = process.env.DASHBOARD_PASSWORD || '';
+const LOGIN_PASS_SHA256 = (process.env.DASHBOARD_PASSWORD_SHA256 || '').trim().toLowerCase();
+const SESSION_SECRET = process.env.DASHBOARD_SESSION_SECRET || '';
+const SESSION_TTL_HOURS = Math.max(1, Math.min(Number(process.env.DASHBOARD_SESSION_TTL_HOURS || 12), 168));
+const COOKIE_SECURE = /^(1|true|yes|on)$/i.test(process.env.DASHBOARD_COOKIE_SECURE || 'false');
+const AUTH_REQUIRED = !/^(0|false|no|off)$/i.test(process.env.DASHBOARD_AUTH_REQUIRED || 'true');
 const DIAG_DIR = process.env.RUNNER_DIAG_DIR || '/runner-diag';
 const CONSOLE_DIR = process.env.RUNNER_CONSOLE_DIR || '/runner-console';
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const API_VERSION = '2022-11-28';
+const SESSION_COOKIE = 'neko_runner_session';
 const cache = new Map();
+const loginAttempts = new Map();
+let shuttingDown = false;
 
-function json(res, status, body) {
+const passwordConfigured = Boolean(LOGIN_PASS || LOGIN_PASS_SHA256);
+const authConfigured = Boolean(LOGIN_USER && passwordConfigured);
+
+if (AUTH_REQUIRED && !authConfigured) {
+  console.error('ERROR: Dashboard authentication is required but credentials are incomplete.');
+  console.error('Set DASHBOARD_USERNAME and either DASHBOARD_PASSWORD or DASHBOARD_PASSWORD_SHA256.');
+  process.exit(1);
+}
+
+if (authConfigured && SESSION_SECRET.length < 32) {
+  console.error('ERROR: DASHBOARD_SESSION_SECRET must be at least 32 characters when authentication is enabled.');
+  process.exit(1);
+}
+
+function securityHeaders() {
+  return {
+    'x-content-type-options': 'nosniff',
+    'x-frame-options': 'DENY',
+    'referrer-policy': 'no-referrer',
+    'content-security-policy': "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+  };
+}
+
+function json(res, status, body, extraHeaders = {}) {
   const payload = JSON.stringify(body);
   res.writeHead(status, {
+    ...securityHeaders(),
     'content-type': 'application/json; charset=utf-8',
     'cache-control': 'no-store',
     'content-length': Buffer.byteLength(payload),
+    ...extraHeaders,
   });
   res.end(payload);
 }
 
-function text(res, status, body, type = 'text/plain; charset=utf-8') {
+function text(res, status, body, type = 'text/plain; charset=utf-8', extraHeaders = {}) {
   res.writeHead(status, {
+    ...securityHeaders(),
     'content-type': type,
     'cache-control': 'no-store',
     'content-length': Buffer.byteLength(body),
+    ...extraHeaders,
   });
   res.end(body);
 }
 
-function authorized(req) {
-  if (!BASIC_USER || !BASIC_PASS) return true;
-  const header = req.headers.authorization || '';
-  if (!header.startsWith('Basic ')) return false;
+function redirect(res, location, extraHeaders = {}) {
+  res.writeHead(303, {
+    ...securityHeaders(),
+    location,
+    'cache-control': 'no-store',
+    ...extraHeaders,
+  });
+  res.end();
+}
+
+function constantTimeEqual(a, b) {
+  const left = Buffer.from(String(a));
+  const right = Buffer.from(String(b));
+  if (left.length !== right.length) return false;
+  return crypto.timingSafeEqual(left, right);
+}
+
+function passwordMatches(candidate) {
+  if (LOGIN_PASS_SHA256) {
+    const digest = crypto.createHash('sha256').update(candidate, 'utf8').digest('hex');
+    return constantTimeEqual(digest, LOGIN_PASS_SHA256);
+  }
+  return constantTimeEqual(candidate, LOGIN_PASS);
+}
+
+function parseCookies(req) {
+  const result = {};
+  for (const part of String(req.headers.cookie || '').split(';')) {
+    const index = part.indexOf('=');
+    if (index <= 0) continue;
+    const key = part.slice(0, index).trim();
+    const value = part.slice(index + 1).trim();
+    try {
+      result[key] = decodeURIComponent(value);
+    } catch {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
+function sign(value) {
+  return crypto.createHmac('sha256', SESSION_SECRET).update(value).digest('base64url');
+}
+
+function makeSession(username) {
+  const now = Math.floor(Date.now() / 1000);
+  const payload = Buffer.from(JSON.stringify({
+    u: username,
+    iat: now,
+    exp: now + SESSION_TTL_HOURS * 60 * 60,
+    n: crypto.randomBytes(12).toString('hex'),
+  })).toString('base64url');
+  return `${payload}.${sign(payload)}`;
+}
+
+function readSession(req) {
+  if (!authConfigured) return { u: 'local', exp: Number.MAX_SAFE_INTEGER };
+  const token = parseCookies(req)[SESSION_COOKIE];
+  if (!token) return null;
+  const dot = token.lastIndexOf('.');
+  if (dot <= 0) return null;
+  const payload = token.slice(0, dot);
+  const signature = token.slice(dot + 1);
+  if (!constantTimeEqual(signature, sign(payload))) return null;
   try {
-    const decoded = Buffer.from(header.slice(6), 'base64').toString('utf8');
-    return decoded === `${BASIC_USER}:${BASIC_PASS}`;
+    const data = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    if (data.u !== LOGIN_USER) return null;
+    if (!Number.isFinite(data.exp) || data.exp <= Math.floor(Date.now() / 1000)) return null;
+    return data;
   } catch {
+    return null;
+  }
+}
+
+function sessionCookie(token) {
+  const maxAge = SESSION_TTL_HOURS * 60 * 60;
+  return [
+    `${SESSION_COOKIE}=${encodeURIComponent(token)}`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Strict',
+    `Max-Age=${maxAge}`,
+    COOKIE_SECURE ? 'Secure' : '',
+  ].filter(Boolean).join('; ');
+}
+
+function clearSessionCookie() {
+  return [
+    `${SESSION_COOKIE}=`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Strict',
+    'Max-Age=0',
+    'Expires=Thu, 01 Jan 1970 00:00:00 GMT',
+    COOKIE_SECURE ? 'Secure' : '',
+  ].filter(Boolean).join('; ');
+}
+
+function clientIp(req) {
+  return String(req.socket.remoteAddress || 'unknown');
+}
+
+function loginRateLimited(req) {
+  const key = clientIp(req);
+  const now = Date.now();
+  const item = loginAttempts.get(key);
+  if (!item || item.resetAt <= now) {
+    loginAttempts.delete(key);
     return false;
   }
+  return item.count >= 5;
+}
+
+function recordLoginFailure(req) {
+  const key = clientIp(req);
+  const now = Date.now();
+  const current = loginAttempts.get(key);
+  if (!current || current.resetAt <= now) {
+    loginAttempts.set(key, { count: 1, resetAt: now + 15 * 60 * 1000 });
+  } else {
+    current.count += 1;
+  }
+}
+
+function clearLoginFailures(req) {
+  loginAttempts.delete(clientIp(req));
+}
+
+async function readBody(req, maxBytes = 16 * 1024) {
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of req) {
+    total += chunk.length;
+    if (total > maxBytes) {
+      const err = new Error('Request body too large');
+      err.status = 413;
+      throw err;
+    }
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks).toString('utf8');
 }
 
 async function cached(key, ttlMs, fn) {
@@ -311,20 +479,78 @@ function serveStatic(reqPath, res) {
   fs.readFile(target, (err, data) => {
     if (err) return text(res, 404, 'Not found');
     const ext = path.extname(target);
-    const type = ext === '.html' ? 'text/html; charset=utf-8' : ext === '.css' ? 'text/css; charset=utf-8' : 'application/octet-stream';
-    res.writeHead(200, { 'content-type': type, 'cache-control': 'no-cache' });
+    const type = ext === '.html' ? 'text/html; charset=utf-8'
+      : ext === '.css' ? 'text/css; charset=utf-8'
+      : ext === '.js' ? 'application/javascript; charset=utf-8'
+      : 'application/octet-stream';
+    res.writeHead(200, { ...securityHeaders(), 'content-type': type, 'cache-control': 'no-cache' });
     res.end(data);
   });
 }
 
+function serveLogin(res, error = '') {
+  fs.readFile(path.join(PUBLIC_DIR, 'login.html'), 'utf8', (err, template) => {
+    if (err) return text(res, 500, 'Login page is unavailable');
+    const safeError = error
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;');
+    const body = template.replace('{{ERROR}}', safeError);
+    return text(res, 200, body, 'text/html; charset=utf-8');
+  });
+}
+
 const server = http.createServer(async (req, res) => {
-  if (!authorized(req)) {
-    res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="Neko Runner Dashboard"' });
-    return res.end('Authentication required');
+  if (shuttingDown) {
+    return text(res, 503, 'Dashboard is shutting down', 'text/plain; charset=utf-8', { connection: 'close' });
   }
 
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+
   try {
+    if (url.pathname === '/healthz') {
+      return json(res, 200, { ok: true });
+    }
+
+    if (url.pathname === '/login' && req.method === 'GET') {
+      if (readSession(req)) return redirect(res, '/');
+      return serveLogin(res, '');
+    }
+
+    if (url.pathname === '/login' && req.method === 'POST') {
+      if (!authConfigured) return redirect(res, '/');
+      if (loginRateLimited(req)) {
+        return serveLogin(res, 'Too many failed login attempts. Try again in about 15 minutes.');
+      }
+      const form = new URLSearchParams(await readBody(req));
+      const username = String(form.get('username') || '');
+      const password = String(form.get('password') || '');
+      const usernameOk = constantTimeEqual(username, LOGIN_USER);
+      const passwordOk = passwordMatches(password);
+      if (!usernameOk || !passwordOk) {
+        recordLoginFailure(req);
+        return serveLogin(res, 'Invalid username or password.');
+      }
+      clearLoginFailures(req);
+      return redirect(res, '/', { 'set-cookie': sessionCookie(makeSession(LOGIN_USER)) });
+    }
+
+    if (url.pathname === '/logout') {
+      return redirect(res, '/login', { 'set-cookie': clearSessionCookie() });
+    }
+
+    const session = readSession(req);
+    if (!session) {
+      if (url.pathname.startsWith('/api/')) {
+        return json(res, 401, { error: 'Authentication required' });
+      }
+      return redirect(res, '/login');
+    }
+
+    if (url.pathname === '/api/session') {
+      return json(res, 200, { authenticated: true, username: session.u, expires_at: Number.isFinite(session.exp) ? new Date(session.exp * 1000).toISOString() : null });
+    }
     if (url.pathname === '/api/health') {
       return json(res, 200, { ok: true, org: GITHUB_ORG, token_configured: Boolean(GITHUB_TOKEN), refresh_seconds: REFRESH_SECONDS });
     }
@@ -362,10 +588,50 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+server.keepAliveTimeout = 5000;
+server.headersTimeout = 10000;
+
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`Neko Runner Dashboard listening on :${PORT}`);
   console.log(`Organization: ${GITHUB_ORG || '(not configured)'}`);
   console.log(`Tracked repos: ${DASHBOARD_REPOS.length ? DASHBOARD_REPOS.join(', ') : `auto (max ${MAX_REPOS})`}`);
+  console.log(`Authentication: ${authConfigured ? 'enabled' : 'disabled by explicit configuration'}`);
+  console.log(`Session lifetime: ${SESSION_TTL_HOURS} hour(s)`);
+  if (COOKIE_SECURE) console.log('Secure session cookies: enabled');
   if (!GITHUB_TOKEN) console.warn('WARNING: No GitHub token configured. API rate limits and private data access will be limited.');
-  if (!BASIC_USER || !BASIC_PASS) console.warn('WARNING: Dashboard Basic Auth is disabled. Keep the dashboard bound to localhost or behind an authenticated reverse proxy.');
+});
+
+function gracefulShutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`${signal} received: stopping Neko Runner Dashboard...`);
+
+  const forceTimer = setTimeout(() => {
+    console.warn('Graceful shutdown timed out; closing remaining connections.');
+    if (typeof server.closeAllConnections === 'function') server.closeAllConnections();
+    process.exit(0);
+  }, 8000);
+  forceTimer.unref();
+
+  if (typeof server.closeIdleConnections === 'function') server.closeIdleConnections();
+  server.close(err => {
+    clearTimeout(forceTimer);
+    if (err) {
+      console.error('Dashboard shutdown error:', err);
+      process.exit(1);
+    }
+    console.log('Neko Runner Dashboard stopped cleanly.');
+    process.exit(0);
+  });
+}
+
+process.once('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.once('SIGINT', () => gracefulShutdown('SIGINT'));
+process.once('SIGHUP', () => gracefulShutdown('SIGHUP'));
+process.on('uncaughtException', err => {
+  console.error('Uncaught exception:', err);
+  gracefulShutdown('uncaughtException');
+});
+process.on('unhandledRejection', err => {
+  console.error('Unhandled rejection:', err);
 });
