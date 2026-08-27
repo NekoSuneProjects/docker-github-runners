@@ -1,0 +1,30 @@
+services:
+  github-builder:
+    image: ${RUNNER_IMAGE:-neko-github-builder:latest}
+
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    env_file:
+      - .env
+
+    environment:
+      RUNNER_SCOPE: ${RUNNER_SCOPE:-organization}
+      GITHUB_ORG: ${GITHUB_ORG}
+      ACCESS_TOKEN: ${ACCESS_TOKEN}
+      RUNNER_NAME: ${RUNNER_NAME:-neko-builder}
+      LABELS: ${LABELS:-docker,buildx,crossbuild,builder}
+      RUNNER_UPDATE_ON_START: ${RUNNER_UPDATE_ON_START:-true}
+
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - runner-work:/work
+
+    group_add:
+      - "${DOCKER_GID}"
+
+    restart: unless-stopped
+
+volumes:
+  runner-work:
