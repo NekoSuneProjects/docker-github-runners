@@ -1,22 +1,10 @@
-name: Build and Push Docker Images
+name: Build All Images Manually
 
 on:
-  push:
-    branches:
-      - main
-    tags:
-      - "v*"
-    paths:
-      - Dockerfile
-      - start.sh
-      - runner-dashboard-entrypoint.sh
-      - dashboard/**
-      - node-agent/**
-      - .github/workflows/docker.yml
   workflow_dispatch:
 
 concurrency:
-  group: docker-images-${{ github.ref }}
+  group: docker-images-manual-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -25,161 +13,52 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  RUNNER_IMAGE_NAME: ${{ github.repository }}
-  DASHBOARD_IMAGE_NAME: ${{ github.repository }}-dashboard
-  NODE_AGENT_IMAGE_NAME: ${{ github.repository }}-node-agent
 
 jobs:
-  docker:
-    name: Build Runner + Dashboard + Node Agent Images
-    runs-on:
-      - self-hosted
-      - linux
-      - docker
-      - buildx
-
+  build-all:
+    name: Manual Runner + Dashboard + Agent build
+    runs-on: [self-hosted, linux, docker, buildx]
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Show runner information
-        shell: bash
-        run: |
-          echo "Runner OS:   $RUNNER_OS"
-          echo "Runner Arch: $RUNNER_ARCH"
-          uname -a
-          docker --version
-          docker buildx version
-
-      - name: Set lowercase image names
-        id: images
-        shell: bash
-        run: |
-          RUNNER_IMAGE="$(echo "${REGISTRY}/${RUNNER_IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')"
-          DASHBOARD_IMAGE="$(echo "${REGISTRY}/${DASHBOARD_IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')"
-          NODE_AGENT_IMAGE="$(echo "${REGISTRY}/${NODE_AGENT_IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')"
-
-          echo "runner=${RUNNER_IMAGE}" >> "$GITHUB_OUTPUT"
-          echo "dashboard=${DASHBOARD_IMAGE}" >> "$GITHUB_OUTPUT"
-          echo "node_agent=${NODE_AGENT_IMAGE}" >> "$GITHUB_OUTPUT"
-
-          echo "Runner image:     ${RUNNER_IMAGE}"
-          echo "Dashboard image:  ${DASHBOARD_IMAGE}"
-          echo "Node agent image: ${NODE_AGENT_IMAGE}"
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}
+          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-qemu-action@v3
         with:
           platforms: amd64,arm64
+      - uses: docker/setup-buildx-action@v3
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Generate runner image metadata
-        id: runner_meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ steps.images.outputs.runner }}
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=sha,prefix=sha-
-            type=ref,event=branch
-            type=ref,event=tag
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-
-      - name: Generate dashboard image metadata
-        id: dashboard_meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ steps.images.outputs.dashboard }}
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=sha,prefix=sha-
-            type=ref,event=branch
-            type=ref,event=tag
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-
-      - name: Generate node agent image metadata
-        id: node_agent_meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ steps.images.outputs.node_agent }}
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=sha,prefix=sha-
-            type=ref,event=branch
-            type=ref,event=tag
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-
-      - name: Build and push runner AMD64 + ARM64 image
+      - name: Build runner
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
-          platforms: |
-            linux/amd64
-            linux/arm64
+          platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ steps.runner_meta.outputs.tags }}
-          labels: ${{ steps.runner_meta.outputs.labels }}
-          cache-from: type=gha,scope=runner
-          cache-to: type=gha,mode=min,scope=runner
+          tags: ghcr.io/nekosuneprojects/docker-github-runners:latest
           provenance: false
           sbom: false
 
-      - name: Build and push dashboard AMD64 + ARM64 image
+      - name: Build dashboard
         uses: docker/build-push-action@v6
         with:
           context: ./dashboard
           file: ./dashboard/Dockerfile
-          platforms: |
-            linux/amd64
-            linux/arm64
+          platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ steps.dashboard_meta.outputs.tags }}
-          labels: ${{ steps.dashboard_meta.outputs.labels }}
-          cache-from: type=gha,scope=dashboard
-          cache-to: type=gha,mode=min,scope=dashboard
+          tags: ghcr.io/nekosuneprojects/docker-github-runners-dashboard:latest
           provenance: false
           sbom: false
 
-      - name: Build and push node agent AMD64 + ARM64 image
+      - name: Build node agent
         uses: docker/build-push-action@v6
         with:
           context: ./node-agent
           file: ./node-agent/Dockerfile
-          platforms: |
-            linux/amd64
-            linux/arm64
+          platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ steps.node_agent_meta.outputs.tags }}
-          labels: ${{ steps.node_agent_meta.outputs.labels }}
-          cache-from: type=gha,scope=node-agent
-          cache-to: type=gha,mode=min,scope=node-agent
+          tags: ghcr.io/nekosuneprojects/docker-github-runners-node-agent:latest
           provenance: false
           sbom: false
-
-      - name: Show published images
-        shell: bash
-        run: |
-          echo "Runner image:"
-          echo "${{ steps.images.outputs.runner }}"
-          echo "${{ steps.runner_meta.outputs.tags }}"
-          echo
-          echo "Dashboard image:"
-          echo "${{ steps.images.outputs.dashboard }}"
-          echo "${{ steps.dashboard_meta.outputs.tags }}"
-          echo
-          echo "Node agent image:"
-          echo "${{ steps.images.outputs.node_agent }}"
-          echo "${{ steps.node_agent_meta.outputs.tags }}"

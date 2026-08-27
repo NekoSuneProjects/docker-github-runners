@@ -1,38 +1,32 @@
 services:
   github-builder:
     image: ${RUNNER_IMAGE:-neko-github-builder:latest}
-
     build:
       context: .
       dockerfile: Dockerfile
-
     env_file:
       - .env
-
     environment:
       RUNNER_SCOPE: ${RUNNER_SCOPE:-organization}
       GITHUB_ORG: ${GITHUB_ORG}
+      REPO_URL: ${REPO_URL:-}
       ACCESS_TOKEN: ${ACCESS_TOKEN}
       RUNNER_NAME: ${RUNNER_NAME:-neko-builder}
       LABELS: ${LABELS:-docker,buildx,multiarch,builder}
       RUNNER_UPDATE_ON_START: ${RUNNER_UPDATE_ON_START:-true}
       ENABLE_MULTIARCH_ON_START: ${ENABLE_MULTIARCH_ON_START:-true}
       MULTIARCH_PLATFORMS: ${MULTIARCH_PLATFORMS:-arm64,amd64}
-
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - runner-work:/work
       - runner-diag:/actions-runner/_diag
-
     restart: unless-stopped
 
   dashboard:
     image: ${DASHBOARD_IMAGE:-neko-github-runner-dashboard:latest}
-
     build:
       context: ./dashboard
       dockerfile: Dockerfile
-
     environment:
       GITHUB_ORG: ${GITHUB_ORG}
       ACCESS_TOKEN: ${ACCESS_TOKEN}
@@ -41,7 +35,6 @@ services:
       DASHBOARD_MAX_REPOS: ${DASHBOARD_MAX_REPOS:-12}
       DASHBOARD_REFRESH_SECONDS: ${DASHBOARD_REFRESH_SECONDS:-10}
 
-      # Private dashboard login/session settings
       DASHBOARD_AUTH_REQUIRED: ${DASHBOARD_AUTH_REQUIRED:-true}
       DASHBOARD_USERNAME: ${DASHBOARD_USERNAME:-}
       DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:-}
@@ -50,36 +43,35 @@ services:
       DASHBOARD_SESSION_TTL_HOURS: ${DASHBOARD_SESSION_TTL_HOURS:-12}
       DASHBOARD_COOKIE_SECURE: ${DASHBOARD_COOKIE_SECURE:-false}
 
-      # Remote node aggregation
       DASHBOARD_NODE_SHARED_SECRET: ${DASHBOARD_NODE_SHARED_SECRET:-}
       DASHBOARD_NODE_OFFLINE_SECONDS: ${DASHBOARD_NODE_OFFLINE_SECONDS:-45}
-      DASHBOARD_NODE_DATA_FILE: /data/nodes.json
       DASHBOARD_NODE_MAX_LOG_BYTES: ${DASHBOARD_NODE_MAX_LOG_BYTES:-262144}
+      DASHBOARD_NODE_MAX_BODY_BYTES: ${DASHBOARD_NODE_MAX_BODY_BYTES:-1048576}
 
+      # Persistent SQLite storage for node history, console snapshots and
+      # cleanup history/settings.
+      DASHBOARD_DB_FILE: /data/dashboard.sqlite
+      DASHBOARD_LOG_RETENTION_DAYS: ${DASHBOARD_LOG_RETENTION_DAYS:-30}
+      DASHBOARD_LOG_MAX_ROWS_PER_NODE: ${DASHBOARD_LOG_MAX_ROWS_PER_NODE:-500}
       RUNNER_DIAG_DIR: /runner-diag
 
     ports:
       - "${DASHBOARD_BIND:-127.0.0.1}:${DASHBOARD_PORT:-8080}:8080"
-
     volumes:
       - runner-diag:/runner-diag:ro
       - dashboard-data:/data
-
     depends_on:
       - github-builder
-
     init: true
     stop_grace_period: 10s
     restart: unless-stopped
 
-  # Reports this machine to the central dashboard just like any remote node.
+  # The local machine reports to the dashboard exactly like a remote node.
   node-agent:
     image: ${NODE_AGENT_IMAGE:-neko-github-runner-node-agent:latest}
-
     build:
       context: ./node-agent
       dockerfile: Dockerfile
-
     environment:
       DASHBOARD_URL: http://dashboard:8080
       DASHBOARD_NODE_SHARED_SECRET: ${DASHBOARD_NODE_SHARED_SECRET:-}
@@ -87,22 +79,26 @@ services:
       NODE_NAME: ${NODE_NAME:-Central GitHub Builder}
       NODE_LOCATION: ${NODE_LOCATION:-}
       RUNNER_NAME: ${RUNNER_NAME:-neko-builder}
+      RUNNER_SCOPE: ${RUNNER_SCOPE:-organization}
+      GITHUB_ORG: ${GITHUB_ORG}
+      REPO_URL: ${REPO_URL:-}
+      ACCESS_TOKEN: ${ACCESS_TOKEN}
       NODE_LABELS: ${LABELS:-docker,buildx,multiarch,builder}
       NODE_HEARTBEAT_SECONDS: ${NODE_HEARTBEAT_SECONDS:-15}
       NODE_LOG_TAIL_BYTES: ${NODE_LOG_TAIL_BYTES:-131072}
       RUNNER_DIAG_DIR: /runner-diag
       NODE_HOST_ROOT: /host
-
     volumes:
-      - runner-diag:/runner-diag:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+      # RW is intentional: after a successful archive heartbeat the agent may
+      # remove/truncate local diagnostics during a requested cleanup.
+      - runner-diag:/runner-diag
       - /etc/hostname:/host/etc/hostname:ro
       - /etc/os-release:/host/etc/os-release:ro
       - /proc:/host/proc:ro
-
     depends_on:
       - github-builder
       - dashboard
-
     init: true
     stop_grace_period: 5s
     restart: unless-stopped
