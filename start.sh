@@ -2,6 +2,60 @@
 
 set -Eeuo pipefail
 
+# ======================================================
+# Docker socket auto-configuration
+# ======================================================
+# The container starts as root only for this small setup stage. We read the
+# group ID directly from the mounted host Docker socket, add the runner user to
+# the matching group, then immediately restart this script as the non-root
+# runner user. This removes the need to manually configure DOCKER_GID.
+
+if [[ "$(id -u)" -eq 0 && "${1:-}" != "--runner-user" ]]; then
+    echo
+    echo "============================================"
+    echo " Docker Socket Auto Configuration"
+    echo "============================================"
+
+    if [[ -S /var/run/docker.sock ]]; then
+        DOCKER_SOCKET_GID="$(stat -c '%g' /var/run/docker.sock)"
+        DOCKER_SOCKET_MODE="$(stat -c '%A' /var/run/docker.sock)"
+
+        echo "Docker socket: /var/run/docker.sock"
+        echo "Socket GID:    ${DOCKER_SOCKET_GID}"
+        echo "Socket mode:   ${DOCKER_SOCKET_MODE}"
+
+        EXISTING_GROUP="$(getent group "${DOCKER_SOCKET_GID}" | cut -d: -f1 || true)"
+
+        if [[ -n "${EXISTING_GROUP}" ]]; then
+            DOCKER_SOCKET_GROUP="${EXISTING_GROUP}"
+            echo "Matching group already exists: ${DOCKER_SOCKET_GROUP}:${DOCKER_SOCKET_GID}"
+        else
+            DOCKER_SOCKET_GROUP="docker-socket-${DOCKER_SOCKET_GID}"
+            echo "Creating matching group: ${DOCKER_SOCKET_GROUP}:${DOCKER_SOCKET_GID}"
+            groupadd --gid "${DOCKER_SOCKET_GID}" "${DOCKER_SOCKET_GROUP}"
+        fi
+
+        if id -nG runner | tr ' ' '\n' | grep -Fxq "${DOCKER_SOCKET_GROUP}"; then
+            echo "Runner already belongs to ${DOCKER_SOCKET_GROUP}"
+        else
+            echo "Adding runner to ${DOCKER_SOCKET_GROUP}"
+            usermod -aG "${DOCKER_SOCKET_GROUP}" runner
+        fi
+
+        echo "Runner groups after configuration:"
+        id runner
+    else
+        echo "WARNING: /var/run/docker.sock is not mounted."
+        echo "Docker-based GitHub Actions jobs will not work until the socket is mounted."
+    fi
+
+    echo "Dropping root privileges and starting as runner..."
+    echo "============================================"
+    echo
+
+    exec sudo -E -H -u runner -- /actions-runner/start.sh --runner-user
+fi
+
 API_URL="https://api.github.com"
 API_VERSION="2022-11-28"
 
@@ -31,6 +85,36 @@ if [[ -z "${ACCESS_TOKEN:-}" ]]; then
     echo "ERROR: ACCESS_TOKEN is required"
     exit 1
 fi
+
+verify_docker_socket() {
+    echo
+    echo "============================================"
+    echo " Docker Socket Permission Check"
+    echo "============================================"
+
+    if [[ ! -S /var/run/docker.sock ]]; then
+        echo "WARNING: Docker socket is not mounted."
+        echo "============================================"
+        return 0
+    fi
+
+    echo "Runner identity:"
+    id
+    echo
+    echo "Docker socket:"
+    ls -ln /var/run/docker.sock
+
+    if [[ ! -r /var/run/docker.sock || ! -w /var/run/docker.sock ]]; then
+        echo
+        echo "ERROR: runner still cannot read/write /var/run/docker.sock"
+        echo "The container cannot run Docker-based workflow steps."
+        exit 1
+    fi
+
+    echo
+    echo "✓ Docker socket permissions are available to runner"
+    echo "============================================"
+}
 
 github_api() {
     local method="$1"
@@ -378,6 +462,7 @@ echo
 echo "Starting Neko GitHub Builder..."
 echo
 
+verify_docker_socket
 update_github_runner
 configure_scope
 remove_local_configuration
