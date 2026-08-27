@@ -78,7 +78,7 @@ case "$(uname -m)" in
         ;;
 esac
 
-DEFAULT_LABELS="docker,buildx,crossbuild,builder,${HOST_ARCH}"
+DEFAULT_LABELS="docker,buildx,multiarch,builder,${HOST_ARCH}"
 LABELS="${LABELS:-$DEFAULT_LABELS}"
 
 if [[ -z "${ACCESS_TOKEN:-}" ]]; then
@@ -418,7 +418,7 @@ remove_local_configuration() {
 configure_runner() {
     echo
     echo "============================================"
-    echo " Neko GitHub Multi-Platform Builder"
+    echo " Neko GitHub Docker Builder"
     echo "============================================"
     echo "Runner:       ${RUNNER_NAME}"
     echo "Architecture: ${HOST_ARCH}"
@@ -459,7 +459,7 @@ cleanup() {
 trap cleanup SIGTERM SIGINT
 
 echo
-echo "Starting Neko GitHub Builder..."
+echo "Starting Neko GitHub Docker Builder..."
 echo
 
 verify_docker_socket
