@@ -15,6 +15,7 @@ let stopping = false;
 let offlineSince = 0;
 let lastRecoveryAt = 0;
 let lastState = '';
+let lastDesiredState = '';
 let restartTimer = null;
 
 function exec(command, args, timeout = 60000) {
@@ -38,51 +39,137 @@ function startAgent() {
   });
 }
 
-async function dashboardRunnerState() {
-  if (!DASHBOARD_URL || !NODE_TOKEN || !RUNNER_NAME) return null;
+async function dashboardJson(pathname, options = {}) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 10000);
   try {
-    const r = await fetch(`${DASHBOARD_URL}/internal/nodes/runner-state?name=${encodeURIComponent(RUNNER_NAME)}`, {
-      headers: { authorization: `Bearer ${NODE_TOKEN}`, 'user-agent': 'neko-node-supervisor/1.0' },
+    const r = await fetch(`${DASHBOARD_URL}${pathname}`, {
+      ...options,
+      headers: {
+        authorization: `Bearer ${NODE_TOKEN}`,
+        'user-agent': 'neko-node-supervisor/1.1',
+        ...(options.body ? { 'content-type': 'application/json' } : {}),
+        ...(options.headers || {}),
+      },
       signal: controller.signal,
     });
-    if (!r.ok) throw new Error(`dashboard runner-state ${r.status}: ${(await r.text()).slice(0, 160)}`);
+    if (!r.ok) throw new Error(`dashboard ${pathname} ${r.status}: ${(await r.text()).slice(0, 180)}`);
     return r.json();
   } finally {
     clearTimeout(timeout);
   }
 }
 
-async function findRunnerContainer() {
+async function dashboardRunnerState() {
+  if (!DASHBOARD_URL || !NODE_TOKEN || !RUNNER_NAME) return null;
+  return dashboardJson(`/internal/nodes/runner-state?name=${encodeURIComponent(RUNNER_NAME)}`);
+}
+
+async function dashboardControlState() {
+  if (!DASHBOARD_URL || !NODE_TOKEN || !RUNNER_NAME) return { desired_state: 'running', pending_action: null };
+  return dashboardJson(`/internal/nodes/runner-control?name=${encodeURIComponent(RUNNER_NAME)}`);
+}
+
+async function ackControl(action) {
+  try {
+    await dashboardJson('/internal/nodes/runner-control-ack', {
+      method: 'POST',
+      body: JSON.stringify({ runner_name: RUNNER_NAME, action }),
+    });
+  } catch (err) {
+    console.error(`[supervisor] control ack failed: ${err.message}`);
+  }
+}
+
+async function findRunnerContainer(includeStopped = true) {
   if (RUNNER_CONTAINER_NAME) {
-    const exact = (await exec('docker', ['ps', '-q', '--filter', `name=^/${RUNNER_CONTAINER_NAME}$`], 15000)).trim().split('\n').filter(Boolean)[0];
+    const exact = (await exec('docker', ['ps', includeStopped ? '-aq' : '-q', '--filter', `name=^/${RUNNER_CONTAINER_NAME}$`], 15000)).trim().split('\n').filter(Boolean)[0];
     if (exact) return exact;
   }
-  const args = ['ps', '-q'];
+  const args = ['ps', includeStopped ? '-aq' : '-q'];
   if (RUNNER_CONTAINER_LABEL) args.push('--filter', `label=${RUNNER_CONTAINER_LABEL}`);
   if (RUNNER_NAME) args.push('--filter', `label=neko.runner.name=${RUNNER_NAME}`);
   return (await exec('docker', args, 15000)).trim().split('\n').filter(Boolean)[0] || '';
 }
 
-async function restartRunner(reason) {
+async function containerRunning(container) {
+  if (!container) return false;
+  try {
+    return (await exec('docker', ['inspect', '-f', '{{.State.Running}}', container], 15000)).trim() === 'true';
+  } catch { return false; }
+}
+
+async function ensureStopped(reason) {
+  const container = await findRunnerContainer(true);
+  if (!container) {
+    console.error(`[supervisor] ${reason}, but no managed runner container matched ${RUNNER_NAME}`);
+    return;
+  }
+  if (!(await containerRunning(container))) return;
+  console.warn(`[supervisor] ${reason}; stopping runner container ${container}`);
+  await exec('docker', ['stop', '-t', '15', container], 60000);
+  console.warn(`[supervisor] runner ${RUNNER_NAME} stopped by dashboard control`);
+}
+
+async function ensureStarted(reason) {
+  const container = await findRunnerContainer(true);
+  if (!container) {
+    console.error(`[supervisor] ${reason}, but no managed runner container matched ${RUNNER_NAME}`);
+    return false;
+  }
+  if (await containerRunning(container)) return true;
+  console.warn(`[supervisor] ${reason}; starting runner container ${container}`);
+  await exec('docker', ['start', container], 60000);
+  offlineSince = 0;
+  console.warn(`[supervisor] runner ${RUNNER_NAME} started`);
+  return true;
+}
+
+async function restartRunner(reason, respectCooldown = true) {
   const now = Date.now();
-  if (now - lastRecoveryAt < COOLDOWN_SECONDS * 1000) return;
-  const container = await findRunnerContainer();
+  if (respectCooldown && now - lastRecoveryAt < COOLDOWN_SECONDS * 1000) return;
+  const container = await findRunnerContainer(true);
   if (!container) {
     console.error(`[supervisor] ${reason}, but no managed runner container matched ${RUNNER_NAME}`);
     return;
   }
   console.warn(`[supervisor] ${reason}; restarting runner container ${container}`);
-  await exec('docker', ['restart', '-t', '15', container], 60000);
+  if (await containerRunning(container)) await exec('docker', ['restart', '-t', '15', container], 60000);
+  else await exec('docker', ['start', container], 60000);
   lastRecoveryAt = Date.now();
   offlineSince = 0;
   console.warn(`[supervisor] runner container ${container} restarted`);
 }
 
+async function applyManualControl(control) {
+  const desired = control?.desired_state === 'stopped' ? 'stopped' : 'running';
+  if (desired !== lastDesiredState) {
+    console.log(`[supervisor] dashboard desired runner state: ${desired}`);
+    lastDesiredState = desired;
+  }
+
+  if (control?.pending_action === 'restart') {
+    await restartRunner('dashboard requested restart', false);
+    await ackControl('restart');
+  }
+
+  if (desired === 'stopped') {
+    offlineSince = 0;
+    await ensureStopped('dashboard requested stop');
+    return false;
+  }
+
+  await ensureStarted('dashboard requested running state');
+  return true;
+}
+
 async function healthCheck() {
   if (stopping) return;
   try {
+    const control = await dashboardControlState();
+    const shouldMonitor = await applyManualControl(control);
+    if (!shouldMonitor) return;
+
     const state = await dashboardRunnerState();
     if (!state) return;
     const status = state.found ? String(state.status || 'unknown') : 'missing';
@@ -100,7 +187,7 @@ async function healthCheck() {
       if (!offlineSince) offlineSince = Date.now();
       const age = Math.floor((Date.now() - offlineSince) / 1000);
       if (AUTO_RECOVER_OFFLINE && age >= OFFLINE_SECONDS) {
-        await restartRunner(`GitHub runner has been ${status} for ${age}s`);
+        await restartRunner(`GitHub runner has been ${status} for ${age}s`, true);
       }
     }
   } catch (err) {
@@ -125,9 +212,10 @@ function stop(signal) {
 }
 
 console.log(`[supervisor] runner recovery: ${AUTO_RECOVER_OFFLINE ? 'enabled' : 'disabled'}; offline threshold=${OFFLINE_SECONDS}s; check=${CHECK_SECONDS}s`);
+console.log('[supervisor] dashboard runner controls: start / stop / restart enabled');
 startAgent();
 const healthTimer = setInterval(healthCheck, CHECK_SECONDS * 1000);
-setTimeout(healthCheck, 5000);
+setTimeout(healthCheck, 3000);
 process.once('SIGTERM', () => stop('SIGTERM'));
 process.once('SIGINT', () => stop('SIGINT'));
 process.once('SIGHUP', () => stop('SIGHUP'));
