@@ -5,15 +5,22 @@ RUN apk add --no-cache ca-certificates unzip su-exec \
     && chown node:node /data
 
 WORKDIR /app
+
+COPY package.json /app/package.json
+RUN npm install --omit=dev --no-audit --no-fund
+
 COPY server-v3.js /app/server.js
 COPY server-realtime.js /app/server-realtime.js
 COPY server-control.js /app/server-control.js
+COPY server-websocket.js /app/server-websocket.js
 COPY github-cache.js /app/github-cache.js
+COPY github-persistent-cache.js /app/github-persistent-cache.js
 COPY github-runner-store.js /app/github-runner-store.js
+COPY github-workflow-store.js /app/github-workflow-store.js
 COPY public /app/public
 COPY entrypoint.sh /usr/local/bin/dashboard-entrypoint.sh
 
-RUN sed -i 's#</body>#<script src="/runner-controls-v2.js"></script></body>#' /app/public/index-v3.html \
+RUN sed -i 's#</body>#<script src="/runner-controls-v3.js"></script></body>#' /app/public/index-v3.html \
     && chmod 0755 /usr/local/bin/dashboard-entrypoint.sh
 
 ENV NODE_ENV=production
@@ -27,4 +34,10 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
 STOPSIGNAL SIGTERM
 USER root
 ENTRYPOINT ["/usr/local/bin/dashboard-entrypoint.sh"]
-CMD ["node", "--require", "/app/github-cache.js", "--require", "/app/github-runner-store.js", "/app/server-control.js"]
+CMD ["node", \
+  "--require", "/app/github-cache.js", \
+  "--require", "/app/github-persistent-cache.js", \
+  "--require", "/app/github-runner-store.js", \
+  "--require", "/app/github-workflow-store.js", \
+  "--require", "/app/server-websocket.js", \
+  "/app/server-control.js"]
