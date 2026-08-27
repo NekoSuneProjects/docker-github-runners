@@ -14,7 +14,7 @@ services:
       GITHUB_ORG: ${GITHUB_ORG}
       ACCESS_TOKEN: ${ACCESS_TOKEN}
       RUNNER_NAME: ${RUNNER_NAME:-neko-remote-builder}
-      LABELS: ${LABELS:-docker,buildx,crossbuild,builder}
+      LABELS: ${LABELS:-docker,buildx,multiarch,builder}
       RUNNER_UPDATE_ON_START: ${RUNNER_UPDATE_ON_START:-true}
 
     command:
@@ -46,7 +46,7 @@ services:
       NODE_LOCATION: ${NODE_LOCATION:-}
 
       RUNNER_NAME: ${RUNNER_NAME:-neko-remote-builder}
-      NODE_LABELS: ${LABELS:-docker,buildx,crossbuild,builder}
+      NODE_LABELS: ${LABELS:-docker,buildx,multiarch,builder}
       NODE_HEARTBEAT_SECONDS: ${NODE_HEARTBEAT_SECONDS:-15}
       NODE_LOG_TAIL_BYTES: ${NODE_LOG_TAIL_BYTES:-131072}
       RUNNER_DIAG_DIR: /runner-diag
