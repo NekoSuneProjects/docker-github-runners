@@ -1,6 +1,8 @@
 FROM node:24-alpine
 
-RUN apk add --no-cache ca-certificates unzip
+RUN apk add --no-cache ca-certificates unzip \
+    && mkdir -p /data \
+    && chown node:node /data
 
 WORKDIR /app
 COPY server-v3.js /app/server.js
