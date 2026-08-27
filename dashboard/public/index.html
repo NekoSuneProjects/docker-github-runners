@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Neko Runner Dashboard</title>
+  <style>
+    :root { color-scheme: dark; --bg:#0a0d12; --panel:#111722; --panel2:#161e2b; --border:#263247; --text:#e8edf7; --muted:#8fa0b8; --accent:#7c9cff; --good:#4ad295; --warn:#f1c75b; --bad:#ff6b7a; --info:#62c8ff; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:radial-gradient(circle at top right,#15213a 0,transparent 34%),var(--bg); color:var(--text); }
+    button,input,select { font:inherit; }
+    button { cursor:pointer; }
+    .app { max-width:1600px; margin:0 auto; padding:22px; }
+    .topbar { display:flex; gap:16px; align-items:center; justify-content:space-between; flex-wrap:wrap; margin-bottom:18px; }
+    .brand h1 { margin:0; font-size:24px; letter-spacing:-.02em; }
+    .brand p { margin:5px 0 0; color:var(--muted); font-size:13px; }
+    .toolbar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+    .btn { border:1px solid var(--border); background:var(--panel2); color:var(--text); padding:9px 12px; border-radius:9px; }
+    .btn:hover { border-color:#405477; }
+    .btn.primary { background:var(--accent); color:#09101e; border-color:transparent; font-weight:700; }
+    .status-dot { width:9px; height:9px; border-radius:50%; display:inline-block; margin-right:6px; background:var(--muted); }
+    .status-dot.good { background:var(--good); box-shadow:0 0 10px rgba(74,210,149,.45); }
+    .status-dot.bad { background:var(--bad); }
+    .grid-summary { display:grid; grid-template-columns:repeat(5,minmax(150px,1fr)); gap:12px; margin-bottom:16px; }
+    .card { background:rgba(17,23,34,.92); border:1px solid var(--border); border-radius:12px; }
+    .metric { padding:16px; min-width:0; }
+    .metric .label { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.08em; }
+    .metric .value { margin-top:8px; font-size:29px; font-weight:800; }
+    .metric .sub { color:var(--muted); font-size:12px; margin-top:4px; }
+    .layout { display:grid; grid-template-columns:minmax(0,1.3fr) minmax(360px,.7fr); gap:14px; align-items:start; }
+    .section { overflow:hidden; }
+    .section-head { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:14px 16px; border-bottom:1px solid var(--border); }
+    .section-head h2 { margin:0; font-size:15px; }
+    .section-head .small { color:var(--muted); font-size:12px; }
+    .worker-list { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; padding:12px; }
+    .worker { padding:13px; background:var(--panel2); border:1px solid var(--border); border-radius:10px; min-width:0; }
+    .worker-top { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+    .worker-name { font-weight:750; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .labels { display:flex; gap:5px; flex-wrap:wrap; margin-top:10px; }
+    .chip { border:1px solid var(--border); color:#b8c4d7; background:#0e141f; padding:3px 6px; border-radius:999px; font-size:10px; }
+    .badge { display:inline-flex; align-items:center; border-radius:999px; padding:4px 7px; font-size:10px; font-weight:800; text-transform:uppercase; letter-spacing:.05em; }
+    .badge.success,.badge.online { background:rgba(74,210,149,.13); color:var(--good); }
+    .badge.failure,.badge.cancelled,.badge.offline { background:rgba(255,107,122,.13); color:var(--bad); }
+    .badge.in_progress { background:rgba(98,200,255,.13); color:var(--info); }
+    .badge.queued,.badge.warning { background:rgba(241,199,91,.13); color:var(--warn); }
+    .badge.neutral { background:#202a39; color:#b5c0d0; }
+    .table-wrap { overflow:auto; max-height:650px; }
+    table { width:100%; border-collapse:collapse; min-width:760px; }
+    th,td { padding:10px 12px; border-bottom:1px solid #1d2737; text-align:left; vertical-align:middle; font-size:12px; }
+    th { position:sticky; top:0; z-index:1; background:#111722; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; font-size:10px; }
+    tr.run-row:hover { background:#151e2c; }
+    tr.run-row { cursor:pointer; }
+    .repo { font-weight:750; }
+    .muted { color:var(--muted); }
+    .right-panel { position:sticky; top:12px; }
+    .empty { color:var(--muted); padding:24px; text-align:center; }
+    .detail { padding:14px; }
+    .detail h3 { margin:0 0 5px; font-size:17px; }
+    .detail-meta { color:var(--muted); font-size:12px; line-height:1.6; }
+    .tabs { display:flex; gap:6px; margin:14px 0 10px; flex-wrap:wrap; }
+    .tab { padding:7px 10px; border-radius:8px; border:1px solid var(--border); color:var(--muted); background:transparent; }
+    .tab.active { color:var(--text); background:var(--panel2); border-color:#3b4d6c; }
+    .job { border:1px solid var(--border); background:#0e141e; border-radius:9px; margin:8px 0; overflow:hidden; }
+    .job-head { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:9px 10px; }
+    .step { display:grid; grid-template-columns:22px 1fr auto; gap:8px; padding:7px 10px; border-top:1px solid #1c2635; font-size:11px; }
+    .step.failure { background:rgba(255,107,122,.08); color:#ffd2d7; }
+    .step.success .step-num { color:var(--good); }
+    .step.failure .step-num { color:var(--bad); }
+    .log-tools { display:flex; gap:7px; align-items:center; flex-wrap:wrap; margin-bottom:8px; }
+    .input { background:#0a1018; color:var(--text); border:1px solid var(--border); border-radius:8px; padding:8px 9px; min-width:0; }
+    .logbox { background:#080c12; border:1px solid var(--border); border-radius:9px; max-height:520px; overflow:auto; padding:10px; font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; white-space:pre-wrap; word-break:break-word; }
+    .logline.err { color:#ff9aa6; background:rgba(255,107,122,.07); }
+    .logline.warn { color:#f7d67f; }
+    .logline.ok { color:#a8e7c8; }
+    .notice { padding:10px 12px; margin:10px 0; border-radius:8px; border:1px solid var(--border); background:#0d1420; color:var(--muted); font-size:12px; }
+    .notice.bad { border-color:rgba(255,107,122,.45); color:#ffc2c9; }
+    .active-job { padding:8px 12px; border-bottom:1px solid #1c2635; font-size:12px; }
+    .active-job:last-child { border-bottom:0; }
+    .split { display:flex; justify-content:space-between; gap:10px; align-items:center; }
+    .hidden { display:none !important; }
+    @media (max-width:1100px) { .grid-summary{grid-template-columns:repeat(3,1fr)} .layout{grid-template-columns:1fr} .right-panel{position:static} }
+    @media (max-width:720px) { .app{padding:12px} .grid-summary{grid-template-columns:repeat(2,1fr)} .worker-list{grid-template-columns:1fr} .metric .value{font-size:24px} }
+  </style>
+</head>
+<body>
+<div class="app">
+  <div class="topbar">
+    <div class="brand">
+      <h1>Neko Runner Dashboard</h1>
+      <p id="subtitle">Loading GitHub Actions workers and builds…</p>
+    </div>
+    <div class="toolbar">
+      <span id="connection"><span class="status-dot"></span>Connecting</span>
+      <label class="muted"><input id="autoRefresh" type="checkbox" checked> Auto refresh</label>
+      <button id="refreshBtn" class="btn primary" type="button">Refresh now</button>
+    </div>
+  </div>
+
+  <div class="grid-summary">
+    <div class="card metric"><div class="label">Runners</div><div class="value" id="runnersTotal">–</div><div class="sub" id="runnersOnline">– online</div></div>
+    <div class="card metric"><div class="label">Busy workers</div><div class="value" id="runnersBusy">–</div><div class="sub">Currently assigned</div></div>
+    <div class="card metric"><div class="label">Active builds</div><div class="value" id="activeRuns">–</div><div class="sub">Queued + running</div></div>
+    <div class="card metric"><div class="label">Failures</div><div class="value" id="failures24">–</div><div class="sub">Last 24 hours</div></div>
+    <div class="card metric"><div class="label">Repositories</div><div class="value" id="repoCount">–</div><div class="sub">Being monitored</div></div>
+  </div>
+
+  <div class="layout">
+    <div>
+      <section class="card section" style="margin-bottom:14px">
+        <div class="section-head"><h2>Active workers</h2><span class="small" id="workerUpdated">Waiting for data</span></div>
+        <div id="workerWarnings"></div>
+        <div id="workerList" class="worker-list"><div class="empty">Loading runners…</div></div>
+      </section>
+
+      <section class="card section" style="margin-bottom:14px">
+        <div class="section-head"><h2>Jobs running now</h2><span class="small">Runner assignment from GitHub</span></div>
+        <div id="activeJobs"><div class="empty">No active jobs yet.</div></div>
+      </section>
+
+      <section class="card section">
+        <div class="section-head">
+          <h2>Recent workflow runs</h2>
+          <div class="toolbar">
+            <select id="runFilter" class="input"><option value="all">All statuses</option><option value="active">Active</option><option value="failure">Failures</option><option value="success">Successful</option></select>
+            <input id="repoFilter" class="input" placeholder="Filter repo/workflow">
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Repository</th><th>Workflow / build</th><th>Branch</th><th>Status</th><th>Actor</th><th>Started</th></tr></thead>
+            <tbody id="runsBody"><tr><td colspan="6" class="empty">Loading workflow runs…</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+
+    <aside class="card section right-panel">
+      <div class="section-head"><h2>Build inspector</h2><span class="small">Click any workflow run</span></div>
+      <div id="detailEmpty" class="empty">Select a build to inspect jobs, failed steps, GitHub logs, and local runner diagnostics.</div>
+      <div id="detail" class="detail hidden">
+        <div class="split"><div><h3 id="detailTitle"></h3><div id="detailMeta" class="detail-meta"></div></div><span id="detailBadge" class="badge neutral">–</span></div>
+        <div class="tabs">
+          <button class="tab active" data-tab="steps" type="button">Jobs & steps</button>
+          <button class="tab" data-tab="github" type="button">GitHub logs</button>
+          <button class="tab" data-tab="local" type="button">Runner logs</button>
+        </div>
+        <div id="tab-steps"></div>
+        <div id="tab-github" class="hidden">
+          <div class="log-tools">
+            <button id="loadGithubLogs" class="btn" type="button">Load / refresh logs</button>
+            <input id="logSearch" class="input" placeholder="Search log">
+            <label class="muted"><input id="errorsOnly" type="checkbox"> Errors only</label>
+          </div>
+          <div id="githubLogStatus" class="notice">Logs are loaded on demand. For running jobs, GitHub may not expose the complete archive yet.</div>
+          <div id="githubLogs" class="logbox">No logs loaded.</div>
+        </div>
+        <div id="tab-local" class="hidden">
+          <div class="log-tools">
+            <select id="localFile" class="input" style="max-width:100%"><option>Loading files…</option></select>
+            <button id="loadLocalLog" class="btn" type="button">Refresh log</button>
+          </div>
+          <div class="notice">Local logs are read directly from this runner stack, so they are useful while a build is still running.</div>
+          <div id="localLogs" class="logbox">Choose a runner log file.</div>
+        </div>
+      </div>
+    </aside>
+  </div>
+</div>
+<script>
+(() => {
+  const state = { overview:null, selected:null, detail:null, githubLog:'', localFiles:[], timer:null };
+  const $ = id => document.getElementById(id);
+  const esc = value => String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+  const statusClass = (status, conclusion) => conclusion || status || 'neutral';
+  const fmtTime = value => value ? new Date(value).toLocaleString() : '–';
+  const ago = value => {
+    if (!value) return '–';
+    const ms = Date.now() - new Date(value).getTime();
+    const m = Math.max(0, Math.floor(ms/60000));
+    if (m < 1) return 'just now'; if (m < 60) return `${m}m ago`; const h=Math.floor(m/60); if(h<24)return `${h}h ago`; return `${Math.floor(h/24)}d ago`;
+  };
+  async function api(url, text=false) { const r=await fetch(url,{cache:'no-store'}); if(!r.ok){let msg='';try{msg=(await r.json()).error}catch{msg=await r.text()} throw new Error(msg||`${r.status} ${r.statusText}`)} return text?r.text():r.json(); }
+  function badge(status, conclusion) { const label=conclusion||status||'unknown'; return `<span class="badge ${esc(statusClass(status,conclusion))}">${esc(label.replace('_',' '))}</span>`; }
+
+  function renderOverview(data) {
+    state.overview=data;
+    $('subtitle').textContent = `${data.org} • monitoring ${data.repos.length} repositories • refresh ${data.refresh_seconds}s`;
+    $('connection').innerHTML = '<span class="status-dot good"></span>Live';
+    $('runnersTotal').textContent=data.summary.runners_total;
+    $('runnersOnline').textContent=`${data.summary.runners_online} online`;
+    $('runnersBusy').textContent=data.summary.runners_busy;
+    $('activeRuns').textContent=data.summary.active_runs;
+    $('failures24').textContent=data.summary.failed_24h;
+    $('repoCount').textContent=data.repos.length;
+    $('workerUpdated').textContent=`Updated ${ago(data.generated_at)}`;
+
+    const warns=[];
+    if(data.runners_error) warns.push(`Runner API: ${data.runners_error}`);
+    if(data.repo_errors?.length) warns.push(`${data.repo_errors.length} repositories could not be read. Check token Actions: Read permission.`);
+    $('workerWarnings').innerHTML=warns.map(w=>`<div class="notice bad">${esc(w)}</div>`).join('');
+
+    $('workerList').innerHTML = data.runners.length ? data.runners.map(r=>`<div class="worker"><div class="worker-top"><div class="worker-name">${esc(r.name)}</div>${r.busy?'<span class="badge in_progress">Busy</span>':badge(r.status)}</div><div class="muted" style="font-size:11px;margin-top:5px">${esc(r.os)} • ${r.busy?'Executing a job':'Waiting for work'}</div><div class="labels">${r.labels.map(l=>`<span class="chip">${esc(l)}</span>`).join('')}</div></div>`).join('') : '<div class="empty">No runners returned by GitHub.</div>';
+
+    $('activeJobs').innerHTML = data.active_jobs.length ? data.active_jobs.map(j=>`<div class="active-job"><div class="split"><div><strong>${esc(j.repo)}</strong> / ${esc(j.name)}<div class="muted">${esc(j.runner_name||'Waiting for runner')} ${j.runner_group_name?`• ${esc(j.runner_group_name)}`:''}</div></div>${badge(j.status,j.conclusion)}</div></div>`).join('') : '<div class="empty">No queued or running jobs.</div>';
+    renderRuns();
+  }
+
+  function renderRuns() {
+    const d=state.overview;if(!d)return;
+    const f=$('runFilter').value,q=$('repoFilter').value.trim().toLowerCase();
+    const runs=d.runs.filter(r=>{
+      if(f==='active'&&!['queued','in_progress'].includes(r.status))return false;
+      if(f==='failure'&&r.conclusion!=='failure')return false;
+      if(f==='success'&&r.conclusion!=='success')return false;
+      if(q&&!`${r.repo} ${r.name} ${r.display_title} ${r.branch}`.toLowerCase().includes(q))return false;
+      return true;
+    });
+    $('runsBody').innerHTML=runs.length?runs.map(r=>`<tr class="run-row" data-repo="${esc(r.repo)}" data-id="${r.id}"><td class="repo">${esc(r.repo)}</td><td><strong>${esc(r.name)}</strong><div class="muted">#${r.run_number} • ${esc(r.display_title)}</div></td><td>${esc(r.branch||'–')}</td><td>${badge(r.status,r.conclusion)}</td><td>${esc(r.actor)}</td><td title="${esc(fmtTime(r.created_at))}">${ago(r.created_at)}</td></tr>`).join(''):'<tr><td colspan="6" class="empty">No matching workflow runs.</td></tr>';
+    document.querySelectorAll('.run-row').forEach(row=>row.addEventListener('click',()=>selectRun(row.dataset.repo,row.dataset.id)));
+  }
+
+  async function selectRun(repo,id) {
+    state.selected={repo,id}; $('detailEmpty').classList.add('hidden'); $('detail').classList.remove('hidden'); $('detailTitle').textContent='Loading build…'; $('tab-steps').innerHTML='<div class="empty">Loading jobs and steps…</div>'; state.githubLog=''; $('githubLogs').textContent='No logs loaded.';
+    try {
+      const d=await api(`/api/run?repo=${encodeURIComponent(repo)}&id=${encodeURIComponent(id)}`); state.detail=d; const r=d.run;
+      $('detailTitle').textContent=`${r.repo} • ${r.name} #${r.run_number}`;
+      $('detailMeta').innerHTML=`${esc(r.display_title)}<br>${esc(r.branch||'–')} • ${esc(r.actor)} • ${esc(fmtTime(r.created_at))}`;
+      $('detailBadge').className=`badge ${statusClass(r.status,r.conclusion)}`; $('detailBadge').textContent=(r.conclusion||r.status||'unknown').replace('_',' ');
+      $('tab-steps').innerHTML=d.jobs.length?d.jobs.map(j=>`<div class="job"><div class="job-head"><div><strong>${esc(j.name)}</strong><div class="muted" style="font-size:10px">${esc(j.runner_name||'No runner assigned')} ${j.runner_group_name?`• ${esc(j.runner_group_name)}`:''}</div></div>${badge(j.status,j.conclusion)}</div>${j.steps.map(s=>`<div class="step ${esc(s.conclusion||s.status||'')}"><span class="step-num">${s.number}</span><span>${esc(s.name)}</span><span>${badge(s.status,s.conclusion)}</span></div>`).join('')}</div>`).join(''):'<div class="empty">No job details returned.</div>';
+    } catch(e) { $('tab-steps').innerHTML=`<div class="notice bad">${esc(e.message)}</div>`; }
+  }
+
+  function renderLog(target,textValue) {
+    const search=$('logSearch').value.trim().toLowerCase(); const errorsOnly=$('errorsOnly').checked;
+    let lines=String(textValue||'').split('\n');
+    if(search)lines=lines.filter(l=>l.toLowerCase().includes(search));
+    if(errorsOnly)lines=lines.filter(l=>/error|fail(ed|ure)?|exception|exit code|fatal/i.test(l));
+    lines=lines.slice(-3000);
+    target.innerHTML=lines.map(line=>{let c='';if(/error|fail(ed|ure)?|exception|fatal|##\[error\]/i.test(line))c='err';else if(/warn(ing)?|deprecated/i.test(line))c='warn';else if(/success|completed|passed|listening for jobs/i.test(line))c='ok';return `<div class="logline ${c}">${esc(line)}</div>`}).join('')||'<span class="muted">No matching log lines.</span>';
+    target.scrollTop=target.scrollHeight;
+  }
+
+  async function loadGithubLogs() {
+    if(!state.selected)return;
+    $('githubLogStatus').className='notice'; $('githubLogStatus').textContent='Loading GitHub workflow log archive…';
+    try { state.githubLog=await api(`/api/run-logs?repo=${encodeURIComponent(state.selected.repo)}&id=${encodeURIComponent(state.selected.id)}`,true); $('githubLogStatus').textContent=`Loaded ${state.githubLog.split('\n').length.toLocaleString()} log lines. Errors and warnings are highlighted.`; renderLog($('githubLogs'),state.githubLog); }
+    catch(e){ $('githubLogStatus').className='notice bad'; $('githubLogStatus').textContent=`Could not load GitHub logs: ${e.message}. If this is a private repo, give the dashboard PAT repository Actions: Read permission.`; }
+  }
+
+  async function loadLocalFiles() {
+    try { const d=await api('/api/local-files'); state.localFiles=d.files||[]; $('localFile').innerHTML=state.localFiles.length?state.localFiles.map((f,i)=>`<option value="${i}">${esc(f.source)} • ${esc(f.file)} • ${ago(f.modified_at)}</option>`).join(''):'<option value="">No local logs found</option>'; }
+    catch(e){$('localFile').innerHTML=`<option>${esc(e.message)}</option>`;}
+  }
+  async function loadLocalLog() {
+    const idx=Number($('localFile').value); const f=state.localFiles[idx]; if(!f)return;
+    $('localLogs').textContent='Loading local runner log…';
+    try { const txt=await api(`/api/local-log?source=${encodeURIComponent(f.source)}&file=${encodeURIComponent(f.file)}`,true); renderLog($('localLogs'),txt); }
+    catch(e){$('localLogs').textContent=e.message;}
+  }
+
+  async function refresh() {
+    $('refreshBtn').disabled=true;
+    try { renderOverview(await api('/api/overview')); }
+    catch(e){$('connection').innerHTML='<span class="status-dot bad"></span>API error'; $('subtitle').textContent=e.message;}
+    finally {$('refreshBtn').disabled=false;}
+  }
+  function resetTimer(){clearInterval(state.timer);if($('autoRefresh').checked)state.timer=setInterval(refresh,10000)}
+
+  $('refreshBtn').addEventListener('click',refresh); $('autoRefresh').addEventListener('change',resetTimer); $('runFilter').addEventListener('change',renderRuns); $('repoFilter').addEventListener('input',renderRuns); $('loadGithubLogs').addEventListener('click',loadGithubLogs); $('logSearch').addEventListener('input',()=>renderLog($('githubLogs'),state.githubLog)); $('errorsOnly').addEventListener('change',()=>renderLog($('githubLogs'),state.githubLog)); $('loadLocalLog').addEventListener('click',loadLocalLog);
+  document.querySelectorAll('.tab').forEach(btn=>btn.addEventListener('click',async()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x===btn));['steps','github','local'].forEach(t=>$(`tab-${t}`).classList.toggle('hidden',t!==btn.dataset.tab));if(btn.dataset.tab==='local'){await loadLocalFiles();await loadLocalLog();}}));
+  refresh(); resetTimer();
+})();
+</script>
+</body>
+</html>
