@@ -21,9 +21,6 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - runner-work:/work
 
-    group_add:
-      - "${DOCKER_GID}"
-
     restart: unless-stopped
 
 volumes:
