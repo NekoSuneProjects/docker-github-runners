@@ -51,6 +51,7 @@ services:
       # Persistent SQLite storage for node history, console snapshots and
       # cleanup history/settings.
       DASHBOARD_DB_FILE: /data/dashboard.sqlite
+      DASHBOARD_DATA_DIR: /data
       DASHBOARD_LOG_RETENTION_DAYS: ${DASHBOARD_LOG_RETENTION_DAYS:-30}
       DASHBOARD_LOG_MAX_ROWS_PER_NODE: ${DASHBOARD_LOG_MAX_ROWS_PER_NODE:-500}
       RUNNER_DIAG_DIR: /runner-diag
@@ -59,7 +60,9 @@ services:
       - "${DASHBOARD_BIND:-127.0.0.1}:${DASHBOARD_PORT:-8080}:8080"
     volumes:
       - runner-diag:/runner-diag:ro
-      - dashboard-data:/data
+      # Host bind mount keeps SQLite/history easy to back up. The dashboard
+      # entrypoint automatically fixes ownership before dropping to user node.
+      - ./data:/data
     depends_on:
       - github-builder
     init: true
@@ -106,4 +109,3 @@ services:
 volumes:
   runner-work:
   runner-diag:
-  dashboard-data:
