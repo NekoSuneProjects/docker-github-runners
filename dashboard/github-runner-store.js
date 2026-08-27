@@ -5,18 +5,17 @@ const path = require('path');
 const crypto = require('crypto');
 const { DatabaseSync } = require('node:sqlite');
 
-// This module is preloaded after github-cache.js. It turns GitHub's paginated
-// organization runner endpoint into a persistent SQLite-backed inventory.
-// Dashboard callers always read the inventory from SQLite; GitHub is only
-// contacted by the background/full sync, so one partial/rate-limited response
-// cannot make runners disappear from the UI.
+// This module is preloaded after the GitHub cache layers. It turns GitHub's
+// paginated organization runner endpoint into a persistent SQLite inventory.
+// Dashboard callers always read SQLite; GitHub is contacted by background/full
+// syncs so a partial/rate-limited response cannot make runners disappear.
 
 const upstreamFetch = globalThis.fetch.bind(globalThis);
 const GITHUB_ORG = String(process.env.GITHUB_ORG || '').trim();
 const GITHUB_TOKEN = process.env.GITHUB_DASHBOARD_TOKEN || process.env.ACCESS_TOKEN || '';
 const DB_FILE = process.env.DASHBOARD_DB_FILE || '/data/dashboard.sqlite';
 const API_VERSION = '2022-11-28';
-const SYNC_SECONDS = Math.max(30, Math.min(Number(process.env.DASHBOARD_GITHUB_RUNNER_SYNC_SECONDS || 60), 3600));
+const SYNC_SECONDS = Math.max(30, Math.min(Number(process.env.DASHBOARD_GITHUB_RUNNER_SYNC_SECONDS || 300), 3600));
 const MAX_PAGES = Math.max(1, Math.min(Number(process.env.DASHBOARD_GITHUB_RUNNER_MAX_PAGES || 100), 500));
 
 fs.mkdirSync(path.dirname(DB_FILE), { recursive: true });
@@ -200,22 +199,24 @@ async function fetchRunnerPage(page) {
   const headers = {
     Accept: 'application/vnd.github+json',
     'X-GitHub-Api-Version': API_VERSION,
-    'User-Agent': 'neko-runner-dashboard-runner-store/1.0',
+    'User-Agent': 'neko-runner-dashboard-runner-store/1.1',
   };
   if (GITHUB_TOKEN) headers.Authorization = `Bearer ${GITHUB_TOKEN}`;
 
   const url = `https://api.github.com/orgs/${encodeURIComponent(GITHUB_ORG)}/actions/runners?per_page=100&page=${page}`;
   const response = await upstreamFetch(url, { headers, redirect: 'follow' });
-  const cacheState = String(response.headers.get('x-neko-github-cache') || '');
+  const memoryState = String(response.headers.get('x-neko-github-cache') || '');
+  const persistentState = String(response.headers.get('x-neko-persistent-cache') || '');
   if (!response.ok) {
     const body = await response.text().catch(() => '');
     throw Object.assign(new Error(`GitHub runner sync ${response.status}: ${body.slice(0, 300) || response.statusText}`), { status: response.status });
   }
   const data = await response.json();
+  const stale = memoryState.includes('stale') || persistentState.includes('stale');
   return {
     runners: Array.isArray(data.runners) ? data.runners : [],
     total_count: Number(data.total_count || 0),
-    authoritative: !cacheState.includes('stale-rate-limit'),
+    authoritative: !stale,
   };
 }
 
@@ -254,9 +255,9 @@ async function fullSync(reason = 'scheduled') {
       const now = new Date().toISOString();
       upsertBatch(collected, syncId, now);
 
-      // Only a complete, non-stale pagination pass is allowed to mark runners as
-      // absent. They are intentionally retained forever in SQLite and shown
-      // offline instead of being deleted from the dashboard inventory.
+      // Only a complete, non-stale pagination pass may mark registrations absent.
+      // Rows are still retained permanently and displayed offline rather than
+      // deleted from the dashboard inventory.
       if (complete && authoritative) {
         db.prepare(`
           UPDATE github_runners
@@ -276,8 +277,10 @@ async function fullSync(reason = 'scheduled') {
       });
       lastRuntimeSyncAt = Date.now();
 
-      console.log(`[runner-store] sync complete: fetched=${collected.length} expected=${totalExpected || '?'} pages=${pagesFetched} stored=${runnerSnapshot().total_count} authoritative=${complete && authoritative}`);
-      return runnerSnapshot();
+      const snapshot = runnerSnapshot();
+      process.emit('neko:runner-sync', { reason, snapshot, authoritative: complete && authoritative, at: now });
+      console.log(`[runner-store] sync complete: fetched=${collected.length} expected=${totalExpected || '?'} pages=${pagesFetched} stored=${snapshot.total_count} authoritative=${complete && authoritative}`);
+      return snapshot;
     } catch (err) {
       // Keep every previously stored runner. A failed/rate-limited sync must not
       // shrink the inventory or overwrite old status with a partial result.
@@ -330,9 +333,8 @@ globalThis.__NEKO_RUNNER_STORE__ = {
   },
 };
 
-// First-boot/full sync. This is deliberately asynchronous so the dashboard can
-// start immediately and still serve an existing SQLite inventory while GitHub is
-// slow or rate-limited.
+// First-boot/full sync is asynchronous: an existing SQLite inventory can be
+// served immediately while GitHub is slow or rate-limited.
 setTimeout(() => {
   if (needsSync()) fullSync('startup').catch(() => {});
 }, 750).unref();
