@@ -11,9 +11,7 @@ COPY server-control.js /app/server-control.js
 COPY public /app/public
 COPY entrypoint.sh /usr/local/bin/dashboard-entrypoint.sh
 
-# runner-controls.js is layered on top of the v4 UI so runner controls and
-# current repo/workload details stay isolated from the main dashboard bundle.
-RUN sed -i 's#</body>#<script src="/runner-controls.js"></script></body>#' /app/public/index-v3.html \
+RUN sed -i 's#</body>#<script src="/runner-controls-v2.js"></script></body>#' /app/public/index-v3.html \
     && chmod 0755 /usr/local/bin/dashboard-entrypoint.sh
 
 ENV NODE_ENV=production
