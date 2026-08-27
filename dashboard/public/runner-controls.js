@@ -17,24 +17,24 @@ function maps(){
  return{workload,nodesByRunner,nodesById,controls};
 }
 function workloadHtml(w){return w?`<div class="neko-workload"><div class="neko-workload-label">Current repository / job</div><div class="neko-workload-repo">${esc(w.repo)}</div><div class="neko-workload-title">${esc(w.workflow)}</div><div class="neko-workload-meta">branch ${esc(w.branch)} • job ${esc(w.job)} • ${esc(w.status)}</div></div>`:`<div class="neko-workload"><div class="neko-workload-label">Current repository / job</div><div class="neko-workload-title">Idle — no repository assigned</div></div>`}
-function buttonsHtml(node,runner,control){if(!node)return`<div class="neko-control-state">No node agent matches this runner, so remote controls are unavailable.</div>`;const stopped=control?.desired_state==='stopped';return`<div class="neko-control-row"><button class="neko-control-btn ${stopped?'start':'stop'}" data-runner-action="${stopped?'start':'stop'}" data-node-id="${esc(node.id)}" data-runner="${esc(runner)}">${stopped?'▶ Start runner':'■ Stop runner'}</button><button class="neko-control-btn restart" data-runner-action="restart" data-node-id="${esc(node.id)}" data-runner="${esc(runner)}">↻ Restart</button><span class="neko-control-state ${stopped?'stopped':''}">${stopped?'Stopped by dashboard':'Managed / running'}</span></div><div class="neko-action-msg" data-msg-for="${esc(node.id)}"></div>`}
+function buttonsHtml(node,runner,control,w){if(!node)return`<div class="neko-control-state">No node agent matches this runner, so remote controls are unavailable.</div>`;const stopped=control?.desired_state==='stopped';return`<div class="neko-control-row"><button class="neko-control-btn ${stopped?'start':'stop'}" data-runner-action="${stopped?'start':'stop'}" data-node-id="${esc(node.id)}" data-runner="${esc(runner)}">${stopped?'▶ Start runner':'■ Stop runner'}</button><button class="neko-control-btn restart" data-runner-action="restart" data-node-id="${esc(node.id)}" data-runner="${esc(runner)}">↻ Restart</button><span class="neko-control-state ${stopped?'stopped':''}">${stopped?'Stopped by dashboard':'Managed / running'}</span></div><div class="neko-action-msg" data-msg-for="${esc(node.id)}"></div>`}
 function enhance(){
  const m=maps();
  document.querySelectorAll('#runnerList .runner').forEach(card=>{
    const name=card.querySelector('.runner-name')?.textContent?.trim();if(!name)return;
    let extra=card.querySelector('.neko-runner-extra');if(!extra){extra=document.createElement('div');extra.className='neko-runner-extra';card.appendChild(extra)}
    const node=m.nodesByRunner.get(name),control=m.controls.get(name),w=m.workload.get(name);
-   extra.innerHTML=workloadHtml(w)+buttonsHtml(node,name,control);
+   extra.innerHTML=workloadHtml(w)+buttonsHtml(node,name,control,w);
  });
  document.querySelectorAll('.node-card[data-node]').forEach(card=>{
    const node=m.nodesById.get(card.dataset.node);if(!node)return;
    let extra=card.querySelector('.neko-runner-extra');if(!extra){extra=document.createElement('div');extra.className='neko-runner-extra neko-node-inline';card.appendChild(extra)}
    const w=m.workload.get(node.runner_name),control=m.controls.get(node.runner_name);
-   extra.innerHTML=workloadHtml(w)+buttonsHtml(node,node.runner_name,control);
+   extra.innerHTML=workloadHtml(w)+buttonsHtml(node,node.runner_name,control,w);
  });
  document.querySelectorAll('#workflowRows tr').forEach(row=>{
    const cells=row.querySelectorAll('td');if(!cells.length)return;cells[0].classList.add('neko-repo-cell');
-   const runner=cells[4]?.childNodes?.[0]?.textContent?.trim()||cells[4]?.textContent?.trim();if(runner&&runner!=='–'&&!cells[4].querySelector('.neko-runner-node')){const node=m.nodesByRunner.get(runner);if(node){const d=document.createElement('div');d.className='neko-runner-node';d.textContent=`Node: ${node.name}`;cells[4].appendChild(d)}}
+   const runner=cells[4]?.textContent?.trim();if(runner&&runner!=='–'&&!cells[4].querySelector('.neko-runner-node')){const node=m.nodesByRunner.get(runner);if(node){const d=document.createElement('div');d.className='neko-runner-node';d.textContent=`Node: ${node.name}`;cells[4].appendChild(d)}}
  });
  bindButtons();
 }
