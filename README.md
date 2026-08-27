@@ -41,6 +41,28 @@ It also includes toolchains for producing:
 - PHP / Composer
 - Git LFS
 
+## Automatic Docker socket permissions
+
+You do **not** need to manually configure a Docker group ID.
+
+The container mounts:
+
+```text
+/var/run/docker.sock
+```
+
+At startup it automatically:
+
+1. Reads the GID of the mounted Docker socket.
+2. Finds or creates a matching group inside the container.
+3. Adds the `runner` user to that group.
+4. Verifies the runner can read and write the Docker socket.
+5. Drops root privileges.
+6. Starts the GitHub Actions runner as the non-root `runner` user.
+
+For example, if one host uses Docker GID `988` and another uses `992`, the
+same image works on both without changing `.env`.
+
 ## GitHub runner updates
 
 On every container startup, `start.sh` checks the latest stable `actions/runner`
@@ -84,17 +106,7 @@ cp .env.example .env
 
 Edit `.env` and insert your GitHub token and organization.
 
-Find the Docker group ID:
-
-```bash
-getent group docker | cut -d: -f3
-```
-
-Put the value into:
-
-```env
-DOCKER_GID=992
-```
+No `DOCKER_GID` value is required.
 
 Build:
 
@@ -113,6 +125,38 @@ Logs:
 ```bash
 docker compose logs -f github-builder
 ```
+
+A successful startup should include output similar to:
+
+```text
+Docker Socket Auto Configuration
+Docker socket: /var/run/docker.sock
+Socket GID:    988
+Adding runner to docker
+...
+Docker Socket Permission Check
+✓ Docker socket permissions are available to runner
+```
+
+## Updating an existing installation
+
+After pulling changes to this repository, recreate the container because the
+Dockerfile startup user and socket setup changed:
+
+```bash
+git pull
+docker compose down
+docker compose build --no-cache
+docker compose up -d --force-recreate
+```
+
+Then verify Docker access:
+
+```bash
+docker compose exec github-builder docker version
+```
+
+You should see both the Docker `Client` and `Server` sections.
 
 ## Build one image for AMD64 and ARM64
 
@@ -167,7 +211,6 @@ jobs:
     runs-on:
       - self-hosted
       - linux
-      - arm64
       - crossbuild
 
     steps:
