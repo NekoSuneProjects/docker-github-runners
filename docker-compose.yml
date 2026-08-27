@@ -17,11 +17,45 @@ services:
       LABELS: ${LABELS:-docker,buildx,crossbuild,builder}
       RUNNER_UPDATE_ON_START: ${RUNNER_UPDATE_ON_START:-true}
 
+    command:
+      - /bin/bash
+      - /runner-dashboard-entrypoint.sh
+
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - runner-work:/work
+      - runner-diag:/actions-runner/_diag
+      - ./runner-dashboard-entrypoint.sh:/runner-dashboard-entrypoint.sh:ro
+
+    restart: unless-stopped
+
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+
+    environment:
+      GITHUB_ORG: ${GITHUB_ORG}
+      ACCESS_TOKEN: ${ACCESS_TOKEN}
+      GITHUB_DASHBOARD_TOKEN: ${GITHUB_DASHBOARD_TOKEN:-}
+      DASHBOARD_REPOS: ${DASHBOARD_REPOS:-}
+      DASHBOARD_MAX_REPOS: ${DASHBOARD_MAX_REPOS:-12}
+      DASHBOARD_REFRESH_SECONDS: ${DASHBOARD_REFRESH_SECONDS:-10}
+      DASHBOARD_USERNAME: ${DASHBOARD_USERNAME:-}
+      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:-}
+      RUNNER_DIAG_DIR: /runner-diag
+
+    ports:
+      - "${DASHBOARD_BIND:-127.0.0.1}:${DASHBOARD_PORT:-8080}:8080"
+
+    volumes:
+      - runner-diag:/runner-diag:ro
+
+    depends_on:
+      - github-builder
 
     restart: unless-stopped
 
 volumes:
   runner-work:
+  runner-diag:
