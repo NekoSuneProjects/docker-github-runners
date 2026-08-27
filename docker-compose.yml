@@ -19,15 +19,10 @@ services:
       ENABLE_MULTIARCH_ON_START: ${ENABLE_MULTIARCH_ON_START:-true}
       MULTIARCH_PLATFORMS: ${MULTIARCH_PLATFORMS:-arm64,amd64}
 
-    command:
-      - /bin/bash
-      - /runner-dashboard-entrypoint.sh
-
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - runner-work:/work
       - runner-diag:/actions-runner/_diag
-      - ./runner-dashboard-entrypoint.sh:/runner-dashboard-entrypoint.sh:ro
 
     restart: unless-stopped
 
