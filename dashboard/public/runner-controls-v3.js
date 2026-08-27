@@ -16,7 +16,7 @@ const style=document.createElement('style');style.textContent=`
 `;document.head.appendChild(style);
 
 let data={overview:null,nodes:null,controls:null};
-const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot',"'":'&#39;'}[c]));
 async function api(url,opt={}){const r=await fetch(url,{credentials:'same-origin',cache:'no-store',...opt,headers:{...(opt.body?{'content-type':'application/json'}:{}),...(opt.headers||{})}});if(r.status===401){location='/login';throw Error('Authentication required')}if(!r.ok){let e;try{e=(await r.json()).error}catch{e=await r.text()}throw Error(e||`HTTP ${r.status}`)}return r.json()}
 function stateMaps(){const runs=new Map((data.overview?.runs||[]).map(r=>[String(r.id),r])),work=new Map();for(const j of data.overview?.active_jobs||[]){if(!j.runner_name)continue;const r=runs.get(String(j.run_id));work.set(j.runner_name,{repo:j.repo,workflow:r?.display_title||r?.name||'Workflow',branch:r?.branch||'–',job:j.name,status:j.status,runner_type:j.runner_type})}return{runs,work,nodesByRunner:new Map((data.nodes?.nodes||[]).filter(n=>n.runner_name).map(n=>[n.runner_name,n])),nodesById:new Map((data.nodes?.nodes||[]).map(n=>[n.id,n])),controls:new Map((data.controls?.controls||[]).map(c=>[c.runner_name,c]))}}
 function workload(w){return w?`<div class="neko-workload"><div class="neko-workload-label">Current repository / workload</div><div class="neko-workload-repo">${esc(w.repo)}</div><div class="neko-workload-title">${esc(w.workflow)}</div><div class="neko-workload-meta">branch ${esc(w.branch)} • job ${esc(w.job)} • ${esc(w.status)}${w.runner_type?` • ${esc(w.runner_type.replace('_',' '))}`:''}</div></div>`:`<div class="neko-workload"><div class="neko-workload-label">Current repository / workload</div><div class="neko-workload-title">Idle — no repository assigned</div></div>`}
@@ -29,5 +29,4 @@ function bind(){document.querySelectorAll('[data-rc-action]').forEach(b=>{if(b.d
 function setData(next){data={overview:next.overview||data.overview,nodes:next.nodes||data.nodes,controls:next.controls||data.controls};render()}
 window.NekoRunnerControls={setData,render};
 window.addEventListener('neko-live-data',e=>setData(e.detail||{}));
-setTimeout(async()=>{try{const[o,n,c]=await Promise.all([api('/api/overview'),api('/api/nodes'),api('/api/runner-controls')]);setData({overview:o,nodes:n,controls:c})}catch(e){console.error('[runner-controls initial]',e)}},700);
 })();
