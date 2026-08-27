@@ -94,12 +94,18 @@ services:
       RUNNER_DIAG_DIR: /runner-diag
       NODE_HOST_ROOT: /host
 
-      # Stuck-runner watchdog. Detection is on by default; automatic restart is
-      # opt-in so legitimate long silent jobs are not killed unexpectedly.
       NODE_STUCK_WATCHDOG_ENABLED: ${NODE_STUCK_WATCHDOG_ENABLED:-true}
       NODE_STUCK_THRESHOLD_SECONDS: ${NODE_STUCK_THRESHOLD_SECONDS:-600}
       NODE_AUTO_RECOVER_STUCK: ${NODE_AUTO_RECOVER_STUCK:-false}
       NODE_STUCK_RECOVERY_COOLDOWN_SECONDS: ${NODE_STUCK_RECOVERY_COOLDOWN_SECONDS:-900}
+
+      # Supervisor recovery is separate from the silent-job watchdog. The
+      # dashboard tells the node whether GitHub sees its matching runner online.
+      # If it remains offline, only that runner container is restarted.
+      NODE_AUTO_RECOVER_OFFLINE: ${NODE_AUTO_RECOVER_OFFLINE:-true}
+      NODE_RUNNER_HEALTHCHECK_SECONDS: ${NODE_RUNNER_HEALTHCHECK_SECONDS:-30}
+      NODE_RUNNER_OFFLINE_RECOVERY_SECONDS: ${NODE_RUNNER_OFFLINE_RECOVERY_SECONDS:-120}
+      NODE_RUNNER_OFFLINE_RECOVERY_COOLDOWN_SECONDS: ${NODE_RUNNER_OFFLINE_RECOVERY_COOLDOWN_SECONDS:-600}
       NODE_RUNNER_CONTAINER_LABEL: neko.runner.managed=true
 
     volumes:
