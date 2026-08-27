@@ -43,8 +43,16 @@ services:
       DASHBOARD_REPOS: ${DASHBOARD_REPOS:-}
       DASHBOARD_MAX_REPOS: ${DASHBOARD_MAX_REPOS:-12}
       DASHBOARD_REFRESH_SECONDS: ${DASHBOARD_REFRESH_SECONDS:-10}
+
+      # Private dashboard login/session settings
+      DASHBOARD_AUTH_REQUIRED: ${DASHBOARD_AUTH_REQUIRED:-true}
       DASHBOARD_USERNAME: ${DASHBOARD_USERNAME:-}
       DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:-}
+      DASHBOARD_PASSWORD_SHA256: ${DASHBOARD_PASSWORD_SHA256:-}
+      DASHBOARD_SESSION_SECRET: ${DASHBOARD_SESSION_SECRET:-}
+      DASHBOARD_SESSION_TTL_HOURS: ${DASHBOARD_SESSION_TTL_HOURS:-12}
+      DASHBOARD_COOKIE_SECURE: ${DASHBOARD_COOKIE_SECURE:-false}
+
       RUNNER_DIAG_DIR: /runner-diag
 
     ports:
@@ -56,6 +64,9 @@ services:
     depends_on:
       - github-builder
 
+    # tini forwards stop signals correctly and Node shuts down gracefully.
+    init: true
+    stop_grace_period: 10s
     restart: unless-stopped
 
 volumes:
