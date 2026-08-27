@@ -30,6 +30,8 @@ services:
     restart: unless-stopped
 
   dashboard:
+    image: ${DASHBOARD_IMAGE:-neko-github-runner-dashboard:latest}
+
     build:
       context: ./dashboard
       dockerfile: Dockerfile
