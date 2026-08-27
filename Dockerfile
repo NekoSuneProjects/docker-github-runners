@@ -83,12 +83,15 @@ RUN set -eux; \
     sudo rm -rf /var/lib/apt/lists/*
 
 COPY --chown=runner:runner start.sh /actions-runner/start.sh
-RUN chmod +x /actions-runner/start.sh
+COPY --chown=root:root runner-dashboard-entrypoint.sh /runner-dashboard-entrypoint.sh
+RUN chmod +x /actions-runner/start.sh \
+    && sudo chmod +x /runner-dashboard-entrypoint.sh
 
 WORKDIR /actions-runner
 
-# Startup begins as root only long enough to match the mounted Docker socket
-# group. start.sh then drops privileges to the non-root runner user.
+# Startup begins as root so the image can register host binfmt/QEMU support and
+# match the mounted Docker socket group. start.sh then drops privileges to the
+# non-root runner user before GitHub Actions starts.
 USER root
 
-CMD ["/actions-runner/start.sh"]
+CMD ["/runner-dashboard-entrypoint.sh"]
