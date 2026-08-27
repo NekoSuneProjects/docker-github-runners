@@ -233,4 +233,9 @@ RUN chmod +x /actions-runner/start.sh
 
 WORKDIR /actions-runner
 
+# Startup begins as root only long enough to match the mounted Docker socket
+# group. start.sh then drops privileges to the non-root runner user before
+# configuring or running GitHub Actions.
+USER root
+
 CMD ["/actions-runner/start.sh"]
