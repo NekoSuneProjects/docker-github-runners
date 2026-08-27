@@ -1,22 +1,25 @@
-name: Build All Images Manually
+name: Build Runner Image
 
 on:
+  push:
+    branches: [runner]
+    paths:
+      - Dockerfile
+      - start.sh
+      - runner-dashboard-entrypoint.sh
+      - .github/workflows/docker.yml
   workflow_dispatch:
 
 concurrency:
-  group: docker-images-manual-${{ github.ref }}
+  group: runner-image-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
   contents: read
   packages: write
 
-env:
-  REGISTRY: ghcr.io
-
 jobs:
-  build-all:
-    name: Manual Runner + Dashboard + Agent build
+  runner:
     runs-on: [self-hosted, linux, docker, buildx]
     steps:
       - uses: actions/checkout@v4
@@ -29,36 +32,22 @@ jobs:
         with:
           platforms: amd64,arm64
       - uses: docker/setup-buildx-action@v3
-
-      - name: Build runner
-        uses: docker/build-push-action@v6
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ghcr.io/nekosuneprojects/docker-github-runners
+          tags: |
+            type=raw,value=latest
+            type=sha,prefix=sha-
+      - uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ghcr.io/nekosuneprojects/docker-github-runners:latest
-          provenance: false
-          sbom: false
-
-      - name: Build dashboard
-        uses: docker/build-push-action@v6
-        with:
-          context: ./dashboard
-          file: ./dashboard/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ghcr.io/nekosuneprojects/docker-github-runners-dashboard:latest
-          provenance: false
-          sbom: false
-
-      - name: Build node agent
-        uses: docker/build-push-action@v6
-        with:
-          context: ./node-agent
-          file: ./node-agent/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ghcr.io/nekosuneprojects/docker-github-runners-node-agent:latest
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=runner
+          cache-to: type=gha,mode=min,scope=runner
           provenance: false
           sbom: false
