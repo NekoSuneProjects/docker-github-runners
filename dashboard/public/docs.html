@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="robots" content="noindex,nofollow,noarchive">
+  <title>Runner Build Docs · Neko Runner Dashboard</title>
+  <style>
+    :root{color-scheme:dark;--bg:#090d14;--panel:#111722;--panel2:#161e2b;--border:#263247;--text:#e8edf7;--muted:#8fa0b8;--accent:#7c9cff;--good:#4ad295;--warn:#f1c75b;--bad:#ff6b7a;--info:#62c8ff}*{box-sizing:border-box}body{margin:0;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:radial-gradient(circle at top right,#15213a 0,transparent 34%),var(--bg);color:var(--text)}a{color:inherit}.app{max-width:1280px;margin:0 auto;padding:22px}.topbar{display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:18px}.brand h1{margin:0;font-size:25px}.brand p{margin:5px 0 0;color:var(--muted);font-size:13px}.toolbar{display:flex;gap:8px;flex-wrap:wrap}.btn{border:1px solid var(--border);background:var(--panel2);color:var(--text);padding:9px 12px;border-radius:9px;text-decoration:none;display:inline-flex;align-items:center}.btn:hover{border-color:#405477}.btn.danger{border-color:rgba(255,107,122,.4);color:#ffb0b9}.grid{display:grid;grid-template-columns:260px minmax(0,1fr);gap:14px;align-items:start}.card{background:rgba(17,23,34,.95);border:1px solid var(--border);border-radius:12px}.nav{position:sticky;top:12px;padding:12px}.nav a{display:block;padding:9px 10px;border-radius:8px;color:var(--muted);text-decoration:none;font-size:13px}.nav a:hover{background:var(--panel2);color:var(--text)}.content{padding:20px}.content h2{margin:28px 0 8px;font-size:21px}.content h2:first-child{margin-top:0}.content h3{margin:20px 0 7px;font-size:16px}.content p,.content li{color:#c6d0df;line-height:1.65;font-size:14px}.content code:not(pre code){background:#0a1018;border:1px solid var(--border);padding:2px 5px;border-radius:5px}.note{padding:12px 14px;border:1px solid var(--border);background:#0d1420;border-radius:9px;margin:12px 0;color:#c6d0df;font-size:13px;line-height:1.55}.note.good{border-color:rgba(74,210,149,.4)}.note.warn{border-color:rgba(241,199,91,.45)}.note.bad{border-color:rgba(255,107,122,.45)}.code{position:relative;margin:10px 0 18px}.code pre{margin:0;background:#070b11;border:1px solid var(--border);border-radius:10px;padding:14px;padding-top:42px;overflow:auto;font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#dce5f3}.copy{position:absolute;right:8px;top:8px;border:1px solid var(--border);background:#151d2a;color:var(--text);border-radius:7px;padding:5px 8px;font-size:11px;cursor:pointer}.copy:hover{border-color:#4b6289}.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;min-width:720px}th,td{padding:10px;border-bottom:1px solid #1d2737;text-align:left;vertical-align:top;font-size:13px}th{color:var(--muted);text-transform:uppercase;font-size:10px;letter-spacing:.05em}.yes{color:var(--good)}.maybe{color:var(--warn)}.no{color:var(--bad)}@media(max-width:850px){.grid{grid-template-columns:1fr}.nav{position:static}.nav-links{display:flex;overflow:auto}.nav a{white-space:nowrap}.app{padding:12px}.content{padding:15px}}
+  </style>
+</head>
+<body>
+<div class="app">
+  <div class="topbar">
+    <div class="brand"><h1>Runner Build Docs</h1><p>AMD64, ARM64, multi-architecture Docker images, and Windows binaries from Linux.</p></div>
+    <div class="toolbar"><a class="btn" href="/">← Dashboard</a><a class="btn danger" href="/logout">Logout</a></div>
+  </div>
+  <div class="grid">
+    <aside class="card nav"><div class="nav-links">
+      <a href="#quick">Quick guide</a><a href="#labels">Runner labels</a><a href="#amd64">Linux AMD64</a><a href="#arm64">Linux ARM64</a><a href="#docker">AMD64 + ARM64 Docker</a><a href="#windows">Windows from Linux</a><a href="#dotnet">Windows .NET</a><a href="#artifacts">Artifacts</a><a href="#matrix">One workflow / many targets</a><a href="#limits">Limits</a><a href="#tips">Slow VPS tips</a>
+    </div></aside>
+    <main class="card content">
+      <h2 id="quick">Quick guide</h2>
+      <div class="table-wrap"><table><thead><tr><th>Wanted output</th><th>From Linux AMD64 runner</th><th>Recommended method</th></tr></thead><tbody>
+        <tr><td>Linux AMD64 binary</td><td class="yes">Yes</td><td>Native compiler installed by the job.</td></tr>
+        <tr><td>Linux ARM64 binary</td><td class="yes">Yes</td><td>Cross-compiler such as <code>aarch64-linux-gnu-gcc</code>.</td></tr>
+        <tr><td>Docker linux/amd64</td><td class="yes">Yes</td><td>Docker Buildx.</td></tr>
+        <tr><td>Docker linux/arm64</td><td class="yes">Yes</td><td>Buildx + QEMU/binfmt.</td></tr>
+        <tr><td>One AMD64 + ARM64 Docker manifest</td><td class="yes">Yes</td><td><code>docker/build-push-action</code> with both platforms.</td></tr>
+        <tr><td>Windows x64 .exe/.dll (C/C++)</td><td class="yes">Yes</td><td>MinGW-w64 cross-compiler.</td></tr>
+        <tr><td>Windows .NET win-x64/win-arm64</td><td class="yes">Yes</td><td><code>actions/setup-dotnet</code> + RID publish.</td></tr>
+        <tr><td>MSVC / Visual Studio / Windows containers</td><td class="no">No</td><td>Use a real Windows GitHub runner.</td></tr>
+      </tbody></table></div>
+      <div class="note warn">The Neko runner image is intentionally lightweight. Heavy SDKs and compilers are not permanently baked into it. Install the tools a workflow needs, or build a reusable builder image for repeated jobs.</div>
+
+      <h2 id="labels">Runner labels</h2>
+      <p>Route Docker-capable jobs to the self-hosted runner with labels. The actual machine still has its GitHub default architecture label such as <code>X64</code> or <code>ARM64</code>.</p>
+      <div class="code"><button class="copy">Copy</button><pre><code>jobs:
+  build:
+    runs-on:
+      - self-hosted
+      - Linux
+      - docker
+      - buildx</code></pre></div>
+      <p>Use <code>X64</code> when the job itself must execute natively on AMD64. Do not add <code>ARM64</code> just because the job produces an ARM64 Docker image; an AMD64 node can cross-build that image with Buildx/QEMU.</p>
+
+      <h2 id="amd64">Build a Linux AMD64 binary</h2>
+      <p>For a native C/C++ build on an AMD64 node, install only the compiler packages needed by that job.</p>
+      <div class="code"><button class="copy">Copy</button><pre><code>name: Linux AMD64 binary
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential
+
+      - name: Build
+        run: |
+          mkdir -p dist
+          gcc -O2 -o dist/myapp-linux-amd64 src/main.c
+          file dist/myapp-linux-amd64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: myapp-linux-amd64
+          path: dist/myapp-linux-amd64</code></pre></div>
+
+      <h2 id="arm64">Build a Linux ARM64 binary on AMD64</h2>
+      <p>For C/C++, a cross-compiler is normally much faster than emulating a complete ARM64 machine.</p>
+      <div class="code"><button class="copy">Copy</button><pre><code>name: Linux ARM64 binary from AMD64
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build-arm64:
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ARM64 cross compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-aarch64-linux-gnu \
+            g++-aarch64-linux-gnu
+
+      - name: Cross compile
+        run: |
+          mkdir -p dist
+          aarch64-linux-gnu-gcc -O2 \
+            -o dist/myapp-linux-arm64 src/main.c
+          file dist/myapp-linux-arm64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: myapp-linux-arm64
+          path: dist/myapp-linux-arm64</code></pre></div>
+      <div class="note">For Go, Rust, Zig and other languages, prefer their native cross-target support when possible instead of CPU emulation.</div>
+
+      <h2 id="docker">Build and push AMD64 + ARM64 Docker images</h2>
+      <p>This is the main multi-architecture setup for the runner. An AMD64 VPS can build and publish ARM64 images at any time.</p>
+      <div class="code"><button class="copy">Copy</button><pre><code>name: Multi-arch Docker image
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  docker:
+    runs-on: [self-hosted, Linux, docker, buildx]
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64,amd64
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:latest
+            ghcr.io/${{ github.repository }}:sha-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max</code></pre></div>
+      <div class="note good">Your node also registers multi-architecture binfmt support at startup when <code>ENABLE_MULTIARCH_ON_START=true</code>. Keeping <code>setup-qemu-action</code> in a workflow is still a useful self-contained safety check.</div>
+
+      <h3>Build ARM64 only</h3>
+      <div class="code"><button class="copy">Copy</button><pre><code>- uses: docker/setup-qemu-action@v3
+  with:
+    platforms: arm64
+
+- uses: docker/setup-buildx-action@v3
+
+- uses: docker/build-push-action@v6
+  with:
+    context: .
+    platforms: linux/arm64
+    push: true
+    tags: ghcr.io/YOUR_ORG/YOUR_IMAGE:arm64</code></pre></div>
+
+      <h2 id="windows">Build Windows C/C++ files from Linux</h2>
+      <p>MinGW-w64 can create Windows PE <code>.exe</code> and <code>.dll</code> files while the job itself runs on Linux.</p>
+      <div class="code"><button class="copy">Copy</button><pre><code>name: Windows x64 EXE from Linux
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  windows-cross:
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install MinGW-w64
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mingw-w64
+
+      - name: Build Windows x64 EXE
+        run: |
+          mkdir -p dist
+          x86_64-w64-mingw32-gcc -O2 \
+            -o dist/myapp-windows-x64.exe src/main.c
+          file dist/myapp-windows-x64.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: myapp-windows-x64
+          path: dist/myapp-windows-x64.exe</code></pre></div>
+      <p>For a 32-bit Windows binary, use <code>i686-w64-mingw32-gcc</code>. For C++, use the corresponding <code>g++</code> compiler.</p>
+      <div class="note warn">A MinGW-built Windows binary is not an MSVC build. If your project requires Visual Studio project tooling, MSVC libraries, signing tools only available on Windows, COM registration, or Windows SDK behavior that MinGW cannot provide, use a Windows runner.</div>
+
+      <h2 id="dotnet">Build Windows .NET from Linux</h2>
+      <p>.NET supports cross-targeted publishing from Linux. The SDK can be installed for the job with the official setup action.</p>
+      <div class="code"><button class="copy">Copy</button><pre><code>name: Windows .NET from Linux
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  windows-dotnet:
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Publish Windows x64
+        run: |
+          dotnet restore
+          dotnet publish -c Release \
+            -r win-x64 \
+            --self-contained true \
+            -o dist/win-x64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: dist/win-x64/</code></pre></div>
+      <p>Change the RID to <code>win-arm64</code> when the project and dependencies support Windows ARM64.</p>
+
+      <h2 id="artifacts">Keep binaries as GitHub artifacts</h2>
+      <p>If you are producing files rather than container images, upload them so they are available from the workflow run.</p>
+      <div class="code"><button class="copy">Copy</button><pre><code>- name: Upload build output
+  uses: actions/upload-artifact@v4
+  with:
+    name: release-files
+    path: dist/
+    if-no-files-found: error
+    retention-days: 14</code></pre></div>
+
+      <h2 id="matrix">One workflow for several binary targets</h2>
+      <p>This example builds three C targets on one Linux AMD64 runner. Matrix jobs may run in parallel only when you have enough separate runner instances; one runner process accepts one job at a time.</p>
+      <div class="code"><button class="copy">Copy</button><pre><code>name: Cross-platform binaries
+
+on:
+  workflow_dispatch:
+  push:
+
+jobs:
+  build:
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [linux-amd64, linux-arm64, windows-x64]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          case "${{ matrix.target }}" in
+            linux-amd64)
+              sudo apt-get install -y --no-install-recommends build-essential
+              ;;
+            linux-arm64)
+              sudo apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu
+              ;;
+            windows-x64)
+              sudo apt-get install -y --no-install-recommends mingw-w64
+              ;;
+          esac
+
+      - name: Build
+        run: |
+          mkdir -p dist
+          case "${{ matrix.target }}" in
+            linux-amd64)
+              gcc -O2 -o dist/myapp-linux-amd64 src/main.c
+              ;;
+            linux-arm64)
+              aarch64-linux-gnu-gcc -O2 -o dist/myapp-linux-arm64 src/main.c
+              ;;
+            windows-x64)
+              x86_64-w64-mingw32-gcc -O2 -o dist/myapp-windows-x64.exe src/main.c
+              ;;
+          esac
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/</code></pre></div>
+
+      <h2 id="limits">What Linux cannot replace</h2>
+      <div class="table-wrap"><table><thead><tr><th>Task</th><th>Linux runner?</th><th>Reason</th></tr></thead><tbody>
+        <tr><td>MinGW Windows EXE/DLL</td><td class="yes">Yes</td><td>Cross-compilation is supported.</td></tr>
+        <tr><td>.NET win-x64 / win-arm64 publish</td><td class="yes">Usually</td><td>Modern .NET supports cross-RID publishing.</td></tr>
+        <tr><td>MSVC <code>cl.exe</code></td><td class="no">No</td><td>Requires Microsoft Windows toolchain/runtime environment.</td></tr>
+        <tr><td>Visual Studio solution requiring VS workloads</td><td class="no">No</td><td>Use a Windows self-hosted or GitHub-hosted Windows runner.</td></tr>
+        <tr><td>Windows Docker containers</td><td class="no">No</td><td>A Linux Docker daemon cannot run Windows containers.</td></tr>
+        <tr><td>Native Windows integration tests</td><td class="no">No</td><td>The produced executable needs Windows to execute normally.</td></tr>
+      </tbody></table></div>
+
+      <h2 id="tips">Tips for a slow VPS</h2>
+      <ul>
+        <li>Prefer a cross-compiler for ARM64 binaries instead of full QEMU emulation.</li>
+        <li>Use Buildx cache for Docker builds: <code>cache-from: type=gha</code> and <code>cache-to: type=gha,mode=max</code>.</li>
+        <li>Only install build packages in jobs that need them.</li>
+        <li>If the same large SDK is installed every build, create a small dedicated builder image and use it repeatedly.</li>
+        <li>Set a sensible <code>timeout-minutes</code> so an impossible build does not occupy a node forever.</li>
+        <li>The dashboard/node-agent cleanup system can remove unused Buildx cache and images after a job finishes.</li>
+        <li>Do not route an ARM64-output Docker job exclusively to an ARM64 physical node unless you specifically need native ARM64 execution. AMD64 → ARM64 Docker cross-build is supported.</li>
+      </ul>
+
+      <div class="note good"><strong>Rule of thumb:</strong> use native execution when you need to run/test the target program, and use cross-compilation or Buildx when you only need to produce the target output.</div>
+    </main>
+  </div>
+</div>
+<script>
+document.querySelectorAll('.copy').forEach(button=>button.addEventListener('click',async()=>{const text=button.nextElementSibling.innerText;try{await navigator.clipboard.writeText(text);const old=button.textContent;button.textContent='Copied';setTimeout(()=>button.textContent=old,1200)}catch{button.textContent='Copy failed'}}));
+</script>
+</body>
+</html>
