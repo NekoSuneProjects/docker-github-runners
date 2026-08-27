@@ -107,8 +107,6 @@ function normalizeJob(job, repo, runId) {
 async function reposToSync() {
   if (CONFIG_REPOS.length) return CONFIG_REPOS.slice(0, MAX_REPOS);
   const stored = db.prepare('SELECT name FROM github_live_repos ORDER BY last_seen_at DESC LIMIT ?').all(MAX_REPOS).map(r => r.name);
-  // Cache-first: use the SQLite repo list immediately if present. Refreshing the
-  // repo discovery list happens through the persistent GitHub cache in background.
   if (stored.length) return stored;
   const data = await gh(`/orgs/${encodeURIComponent(GITHUB_ORG)}/repos?per_page=100&type=all&sort=pushed&direction=desc`);
   return data.slice(0, MAX_REPOS).map(r => r.name);
@@ -150,12 +148,15 @@ async function syncRepo(repo) {
   const runs = (data.workflow_runs || []).map(r => normalizeRun(r, repo));
   for (const run of runs) upsertRun(run);
 
-  // Active runs are refreshed every cycle. Completed runs only need their job
-  // timeline fetched once, which saves a large amount of GitHub API quota.
   for (const run of runs) {
     const active = ['queued','in_progress','waiting','pending','requested'].includes(String(run.status));
-    const haveJobs = Number(db.prepare('SELECT COUNT(*) AS n FROM github_live_jobs WHERE repo=? AND run_id=?').get(repo, run.id)?.n || 0) > 0;
-    if (!active && haveJobs) continue;
+    const jobState = db.prepare(`SELECT COUNT(*) AS total, SUM(CASE WHEN status<>'completed' THEN 1 ELSE 0 END) AS unfinished FROM github_live_jobs WHERE repo=? AND run_id=?`).get(repo, run.id) || {};
+    const haveJobs = Number(jobState.total || 0) > 0;
+    const unfinished = Number(jobState.unfinished || 0) > 0;
+    // Completed runs with a fully completed cached job timeline never need to be
+    // fetched again. If a run just completed while its cached job still says
+    // in_progress/queued, fetch it one final time to close the timeline cleanly.
+    if (!active && haveJobs && !unfinished) continue;
     try {
       const jobs = await gh(`/repos/${encodeURIComponent(GITHUB_ORG)}/${encodeURIComponent(repo)}/actions/runs/${run.id}/jobs?per_page=100`);
       for (const job of jobs.jobs || []) upsertJob(normalizeJob(job, repo, run.id));
@@ -200,8 +201,6 @@ process.on('neko:github-webhook', payload => {
   if (repo) sync('webhook', repo).catch(() => {});
 });
 process.on('neko:runner-sync', () => {
-  // Reclassify cached jobs if a runner has just appeared/disappeared in the
-  // self-hosted inventory, without requiring another GitHub job request.
   const rows = db.prepare('SELECT repo,run_id,json FROM github_live_jobs').all();
   for (const row of rows) {
     const job = JSON.parse(row.json);
