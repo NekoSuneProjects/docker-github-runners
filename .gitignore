@@ -1,0 +1,8 @@
+.env
+
+# Local persistent dashboard database/history.
+data/
+
+# Common local/runtime files.
+*.log
+.DS_Store
