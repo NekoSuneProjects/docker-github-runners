@@ -48,15 +48,20 @@ async function dockerStorage() {
   } catch { return { docker_total_bytes: 0, docker_reclaimable_bytes: 0 }; }
 }
 async function diagStats() {
-  let bytes = 0, latest = null;
+  let bytes = 0, latest = null, consoleLog = null;
   try {
     for (const file of await fs.promises.readdir(DIAG_DIR)) {
       const full = path.join(DIAG_DIR, path.basename(file)), stat = await fs.promises.stat(full).catch(() => null);
       if (!stat?.isFile()) continue;
       bytes += stat.size;
-      if (!latest || stat.mtimeMs > latest.stat.mtimeMs) latest = { file, full, stat };
+      const entry = { file, full, stat };
+      if (file === 'console.log') consoleLog = entry;
+      if (!latest || stat.mtimeMs > latest.stat.mtimeMs) latest = entry;
     }
   } catch {}
+  // console.log mirrors the container console and is therefore the preferred
+  // source for SQLite backtracking; fall back to the newest runner diagnostic.
+  latest = consoleLog || latest;
   if (!latest) return { bytes, file: '', tail: '' };
   const start = Math.max(0, latest.stat.size - LOG_TAIL_BYTES), length = latest.stat.size - start, handle = await fs.promises.open(latest.full, 'r');
   try { const buffer = Buffer.alloc(length); await handle.read(buffer, 0, length, start); return { bytes, file: latest.file, tail: buffer.toString('utf8').replace(/\u001b\[[0-?]*[ -\/]*[@-~]/g, '') }; } finally { await handle.close(); }
@@ -93,6 +98,15 @@ async function clearRunnerLogs() {
 }
 async function runCleanup(action) {
   if (cleaning || !action?.id) return; cleaning = true;
+
+  // A cleanup command may sit queued briefly. Check GitHub again immediately
+  // before pruning so a newly assigned job is never cleaned underneath.
+  if (await runnerBusy() === true) {
+    console.log(`[cleanup] deferred ${action.id}: runner became busy`);
+    cleaning = false;
+    return;
+  }
+
   console.log(`[cleanup] starting ${action.id} (${action.reason || 'requested'}) volumes=${Boolean(action.include_volumes)}`);
   const beforeDocker = await dockerStorage(), outputs = [];
   let success = true;
