@@ -28,7 +28,7 @@ db.exec(`
 
   CREATE TABLE IF NOT EXISTS github_runners (
     github_id INTEGER PRIMARY KEY,
-    name TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
     os TEXT DEFAULT '',
     status TEXT DEFAULT 'offline',
     busy INTEGER NOT NULL DEFAULT 0,
