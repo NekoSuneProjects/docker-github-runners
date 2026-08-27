@@ -81,9 +81,12 @@ async function clearRunnerLogs() {
   let cleared = 0;
   try {
     for (const file of await fs.promises.readdir(DIAG_DIR)) {
-      const full = path.join(DIAG_DIR, path.basename(file)), stat = await fs.promises.stat(full).catch(() => null); if (!stat?.isFile()) continue;
+      const full = path.join(DIAG_DIR, path.basename(file)), stat = await fs.promises.stat(full).catch(() => null);
+      if (!stat?.isFile()) continue;
       cleared += stat.size;
-      if (file === 'console.log') await fs.promises.truncate(full, 0).catch(() => {}); else await fs.promises.unlink(full).catch(() => {});
+      // Truncate instead of unlinking. The GitHub runner and tee may still have
+      // these files open; truncation releases blocks while preserving handles.
+      await fs.promises.truncate(full, 0).catch(() => {});
     }
   } catch {}
   return cleared;
@@ -91,7 +94,7 @@ async function clearRunnerLogs() {
 async function runCleanup(action) {
   if (cleaning || !action?.id) return; cleaning = true;
   console.log(`[cleanup] starting ${action.id} (${action.reason || 'requested'}) volumes=${Boolean(action.include_volumes)}`);
-  const beforeDocker = await dockerStorage(), beforeDiag = await diagStats(), outputs = [];
+  const beforeDocker = await dockerStorage(), outputs = [];
   let success = true;
   try { outputs.push(await exec('docker', ['buildx', 'prune', '-af'], 10 * 60 * 1000)); } catch (e) { outputs.push(`buildx prune warning: ${e.output || e.message}`); }
   try { const args = ['system','prune','-af']; if (action.include_volumes) args.push('--volumes'); outputs.push(await exec('docker', args, 10 * 60 * 1000)); } catch (e) { success = false; outputs.push(`system prune failed: ${e.output || e.message}`); }
