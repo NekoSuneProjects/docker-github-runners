@@ -29,31 +29,31 @@
   <main class="main">
     <header class="topbar">
       <div style="display:flex;align-items:center;gap:10px"><button id="mobileMenu" class="btn mobile-menu">☰</button><div class="page-title"><h1 id="pageHeading">Overview</h1><p id="pageSub">Live runner health and current builds</p></div></div>
-      <div class="top-actions"><span id="status" style="font-size:11px;color:var(--muted)">Connecting…</span><label class="switch"><input id="auto" type="checkbox"> fallback polling</label><button id="refresh" class="btn primary">↻ Manual sync</button></div>
+      <div class="top-actions"><span id="status" style="font-size:11px;color:var(--muted)">Connecting to live cache…</span></div>
     </header>
 
     <div class="content">
       <section class="view active" data-view="overview">
         <div class="metrics">
-          <div class="metric"><div class="metric-label">Runners</div><div class="metric-value" id="mRunners">–</div><div class="metric-sub" id="mRunnersSub">– online</div></div>
+          <div class="metric"><div class="metric-label">Runners</div><div class="metric-value" id="mRunners">–</div><div class="metric-sub" id="mRunnersSub">cached inventory</div></div>
           <div class="metric"><div class="metric-label">Busy</div><div class="metric-value" id="mBusy">–</div><div class="metric-sub">jobs assigned</div></div>
           <div class="metric"><div class="metric-label">Nodes</div><div class="metric-value" id="mNodes">–</div><div class="metric-sub" id="mNodesSub">– online</div></div>
           <div class="metric"><div class="metric-label">Cleanable</div><div class="metric-value" id="mClean">–</div><div class="metric-sub">reported unused data</div></div>
-          <div class="metric"><div class="metric-label">Active Builds</div><div class="metric-value" id="mActive">–</div><div class="metric-sub">queued + running</div></div>
+          <div class="metric"><div class="metric-label">Active Builds</div><div class="metric-value" id="mActive">–</div><div class="metric-sub">cached + live events</div></div>
           <div class="metric"><div class="metric-label">Failures</div><div class="metric-value" id="mFailures">–</div><div class="metric-sub">last 24 hours</div></div>
         </div>
 
-        <section class="section"><div class="section-head"><div><h2>Active builds</h2><p>Live progress, current step, runner and matched node</p></div></div><div class="section-body"><div class="build-grid" id="activeBuilds"><div class="empty">Loading cached active builds…</div></div></div></section>
-        <section class="section"><div class="section-head"><div><h2>Build nodes</h2><p>Current health from connected node agents</p></div><button class="btn small" data-nav="nodes">View all nodes</button></div><div class="section-body"><div class="node-grid" id="overviewNodes"><div class="empty">Loading nodes…</div></div></div></section>
-        <section class="section"><div class="section-head"><div><h2>GitHub self-hosted runners</h2><p>Persistent SQLite registration state; public GitHub-hosted jobs are identified in Workflows</p></div></div><div class="section-body"><div class="runner-list" id="runnerList"><div class="empty">Loading cached runners…</div></div></div></section>
+        <section class="section"><div class="section-head"><div><h2>Active builds</h2><p>Live progress, current step, runner type and matched node</p></div></div><div class="section-body"><div class="build-grid" id="activeBuilds"><div class="empty">Loading cached active builds…</div></div></div></section>
+        <section class="section"><div class="section-head"><div><h2>Build nodes</h2><p>Realtime health pushed from connected node agents</p></div><button class="btn small" data-nav="nodes">View all nodes</button></div><div class="section-body"><div class="node-grid" id="overviewNodes"><div class="empty">Loading nodes…</div></div></div></section>
+        <section class="section"><div class="section-head"><div><h2>GitHub self-hosted runners</h2><p>Persistent SQLite registration state; GitHub-hosted/public jobs are identified separately in Workflows</p></div></div><div class="section-body"><div class="runner-list" id="runnerList"><div class="empty">Loading cached runners…</div></div></div></section>
       </section>
 
       <section class="view" data-view="nodes">
-        <section class="section"><div class="section-head"><div><h2>Connected build nodes</h2><p>Select a machine to inspect SQLite-backed logs, health and cleanup history</p></div></div><div class="section-body"><div class="node-grid" id="allNodes"></div></div></section>
+        <section class="section"><div class="section-head"><div><h2>Connected build nodes</h2><p>Machines currently known by the central dashboard</p></div></div><div class="section-body"><div class="node-grid" id="allNodes"></div></div></section>
       </section>
 
       <section class="view" data-view="workflows">
-        <section class="section"><div class="section-head"><div><h2>Workflow activity</h2><p>WebSocket-updated workflow state with self-hosted vs GitHub-hosted runner detection</p></div><input id="workflowFilter" class="filter" placeholder="Filter repo, workflow, branch…"></div><div class="table-wrap"><table><thead><tr><th>Repository</th><th>Workflow</th><th>Branch</th><th>Status</th><th>Runner</th><th>Actor</th><th>Started</th></tr></thead><tbody id="workflowRows"></tbody></table></div></section>
+        <section class="section"><div class="section-head"><div><h2>Workflow activity</h2><p>WebSocket-pushed SQLite state with self-hosted vs GitHub-hosted runner detection</p></div><input id="workflowFilter" class="filter" placeholder="Filter repo, workflow, branch, runner…"></div><div class="table-wrap"><table><thead><tr><th>Repository</th><th>Workflow</th><th>Branch</th><th>Status</th><th>Runner</th><th>Actor</th><th>Started</th></tr></thead><tbody id="workflowRows"></tbody></table></div></section>
       </section>
 
       <section class="view" data-view="storage">
@@ -69,8 +69,7 @@
   <div class="drawer-body" id="drawerBody"><div class="empty">Nothing selected.</div></div>
 </aside>
 
-<script src="/smooth-refresh.js" defer></script>
-<script src="/dashboard-v4.js" defer></script>
+<script src="/dashboard-shell.js" defer></script>
 <script src="/websocket-live-v2.js" defer></script>
 </body>
 </html>
