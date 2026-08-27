@@ -16,6 +16,8 @@ services:
       RUNNER_NAME: ${RUNNER_NAME:-neko-remote-builder}
       LABELS: ${LABELS:-docker,buildx,multiarch,builder}
       RUNNER_UPDATE_ON_START: ${RUNNER_UPDATE_ON_START:-true}
+      ENABLE_MULTIARCH_ON_START: ${ENABLE_MULTIARCH_ON_START:-true}
+      MULTIARCH_PLATFORMS: ${MULTIARCH_PLATFORMS:-arm64,amd64}
 
     command:
       - /bin/bash
