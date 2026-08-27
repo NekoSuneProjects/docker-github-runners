@@ -8,7 +8,11 @@ WORKDIR /app
 COPY server-v3.js /app/server.js
 COPY public /app/public
 COPY entrypoint.sh /usr/local/bin/dashboard-entrypoint.sh
-RUN chmod 0755 /usr/local/bin/dashboard-entrypoint.sh
+
+# Keep the large dashboard page unchanged in source while adding a small Docs
+# navigation button when the image is assembled.
+RUN sed -i 's#<a class="btn danger" href="/logout">Logout</a>#<a class="btn" href="/docs.html">Docs</a><a class="btn danger" href="/logout">Logout</a>#' /app/public/index.html \
+    && chmod 0755 /usr/local/bin/dashboard-entrypoint.sh
 
 ENV NODE_ENV=production
 ENV PORT=8080
