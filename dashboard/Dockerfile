@@ -8,6 +8,7 @@ WORKDIR /app
 COPY server-v3.js /app/server.js
 COPY server-realtime.js /app/server-realtime.js
 COPY server-control.js /app/server-control.js
+COPY github-cache.js /app/github-cache.js
 COPY public /app/public
 COPY entrypoint.sh /usr/local/bin/dashboard-entrypoint.sh
 
@@ -25,4 +26,4 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
 STOPSIGNAL SIGTERM
 USER root
 ENTRYPOINT ["/usr/local/bin/dashboard-entrypoint.sh"]
-CMD ["node", "/app/server-control.js"]
+CMD ["node", "--require", "/app/github-cache.js", "/app/server-control.js"]
