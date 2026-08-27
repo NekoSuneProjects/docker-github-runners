@@ -6,7 +6,18 @@ on:
       - main
     tags:
       - "v*"
+    paths:
+      - Dockerfile
+      - start.sh
+      - runner-dashboard-entrypoint.sh
+      - dashboard/**
+      - node-agent/**
+      - .github/workflows/docker.yml
   workflow_dispatch:
+
+concurrency:
+  group: docker-images-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
