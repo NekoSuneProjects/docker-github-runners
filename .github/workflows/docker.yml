@@ -1,4 +1,4 @@
-name: Build and Push Docker Image
+name: Build and Push Docker Images
 
 on:
   push:
@@ -14,11 +14,12 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  RUNNER_IMAGE_NAME: ${{ github.repository }}
+  DASHBOARD_IMAGE_NAME: ${{ github.repository }}-dashboard
 
 jobs:
   docker:
-    name: Build Docker Image
+    name: Build Runner + Dashboard Images
     runs-on:
       - self-hosted
       - linux
@@ -37,13 +38,18 @@ jobs:
           docker --version
           docker buildx version
 
-      - name: Set lowercase image name
-        id: image
+      - name: Set lowercase image names
+        id: images
         shell: bash
         run: |
-          IMAGE="$(echo "${REGISTRY}/${IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')"
-          echo "name=${IMAGE}" >> "$GITHUB_OUTPUT"
-          echo "Using image: ${IMAGE}"
+          RUNNER_IMAGE="$(echo "${REGISTRY}/${RUNNER_IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')"
+          DASHBOARD_IMAGE="$(echo "${REGISTRY}/${DASHBOARD_IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')"
+
+          echo "runner=${RUNNER_IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "dashboard=${DASHBOARD_IMAGE}" >> "$GITHUB_OUTPUT"
+
+          echo "Runner image:    ${RUNNER_IMAGE}"
+          echo "Dashboard image: ${DASHBOARD_IMAGE}"
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -60,11 +66,11 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Generate Docker metadata
-        id: meta
+      - name: Generate runner image metadata
+        id: runner_meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ steps.image.outputs.name }}
+          images: ${{ steps.images.outputs.runner }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha,prefix=sha-
@@ -73,7 +79,20 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
 
-      - name: Build and push AMD64 + ARM64 image
+      - name: Generate dashboard image metadata
+        id: dashboard_meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.images.outputs.dashboard }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=sha-
+            type=ref,event=branch
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - name: Build and push runner AMD64 + ARM64 image
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -82,18 +101,40 @@ jobs:
             linux/amd64
             linux/arm64
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          tags: ${{ steps.runner_meta.outputs.tags }}
+          labels: ${{ steps.runner_meta.outputs.labels }}
+          cache-from: type=gha,scope=runner
+          cache-to: type=gha,mode=max,scope=runner
           provenance: true
           sbom: true
 
-      - name: Show published image
+      - name: Build and push dashboard AMD64 + ARM64 image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./dashboard
+          file: ./dashboard/Dockerfile
+          platforms: |
+            linux/amd64
+            linux/arm64
+          push: true
+          tags: ${{ steps.dashboard_meta.outputs.tags }}
+          labels: ${{ steps.dashboard_meta.outputs.labels }}
+          cache-from: type=gha,scope=dashboard
+          cache-to: type=gha,mode=max,scope=dashboard
+          provenance: true
+          sbom: true
+
+      - name: Show published images
         shell: bash
         run: |
-          echo "Published:"
-          echo "${{ steps.image.outputs.name }}"
+          echo "Runner image:"
+          echo "${{ steps.images.outputs.runner }}"
           echo
-          echo "Tags:"
-          echo "${{ steps.meta.outputs.tags }}"
+          echo "Runner tags:"
+          echo "${{ steps.runner_meta.outputs.tags }}"
+          echo
+          echo "Dashboard image:"
+          echo "${{ steps.images.outputs.dashboard }}"
+          echo
+          echo "Dashboard tags:"
+          echo "${{ steps.dashboard_meta.outputs.tags }}"
