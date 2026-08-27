@@ -24,7 +24,8 @@ jobs:
     runs-on:
       - self-hosted
       - linux
-      - crossbuild
+      - docker
+      - buildx
 
     steps:
       - name: Checkout repository
@@ -121,9 +122,9 @@ jobs:
           tags: ${{ steps.runner_meta.outputs.tags }}
           labels: ${{ steps.runner_meta.outputs.labels }}
           cache-from: type=gha,scope=runner
-          cache-to: type=gha,mode=max,scope=runner
-          provenance: true
-          sbom: true
+          cache-to: type=gha,mode=min,scope=runner
+          provenance: false
+          sbom: false
 
       - name: Build and push dashboard AMD64 + ARM64 image
         uses: docker/build-push-action@v6
@@ -137,9 +138,9 @@ jobs:
           tags: ${{ steps.dashboard_meta.outputs.tags }}
           labels: ${{ steps.dashboard_meta.outputs.labels }}
           cache-from: type=gha,scope=dashboard
-          cache-to: type=gha,mode=max,scope=dashboard
-          provenance: true
-          sbom: true
+          cache-to: type=gha,mode=min,scope=dashboard
+          provenance: false
+          sbom: false
 
       - name: Build and push node agent AMD64 + ARM64 image
         uses: docker/build-push-action@v6
@@ -153,9 +154,9 @@ jobs:
           tags: ${{ steps.node_agent_meta.outputs.tags }}
           labels: ${{ steps.node_agent_meta.outputs.labels }}
           cache-from: type=gha,scope=node-agent
-          cache-to: type=gha,mode=max,scope=node-agent
-          provenance: true
-          sbom: true
+          cache-to: type=gha,mode=min,scope=node-agent
+          provenance: false
+          sbom: false
 
       - name: Show published images
         shell: bash
