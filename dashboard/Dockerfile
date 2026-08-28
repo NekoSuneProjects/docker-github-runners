@@ -21,7 +21,11 @@ COPY patch-workload.js /app/patch-workload.js
 COPY public /app/public
 COPY entrypoint.sh /usr/local/bin/dashboard-entrypoint.sh
 
-RUN node /app/patch-workload.js \
+RUN node --check /app/patch-workload.js \
+    && node --check /app/public/workload-ui.js \
+    && node /app/patch-workload.js \
+    && node --check /app/server.js \
+    && node --check /app/server-websocket.js \
     && sed -i 's#</body>#<script src="/runner-controls-v3.js"></script><script src="/workload-ui.js"></script></body>#' /app/public/index-v3.html \
     && chmod 0755 /usr/local/bin/dashboard-entrypoint.sh
 
