@@ -17,10 +17,12 @@ COPY github-cache.js /app/github-cache.js
 COPY github-persistent-cache.js /app/github-persistent-cache.js
 COPY github-runner-store.js /app/github-runner-store.js
 COPY github-workflow-store.js /app/github-workflow-store.js
+COPY patch-workload.js /app/patch-workload.js
 COPY public /app/public
 COPY entrypoint.sh /usr/local/bin/dashboard-entrypoint.sh
 
-RUN sed -i 's#</body>#<script src="/runner-controls-v3.js"></script></body>#' /app/public/index-v3.html \
+RUN node /app/patch-workload.js \
+    && sed -i 's#</body>#<script src="/runner-controls-v3.js"></script><script src="/workload-ui.js"></script></body>#' /app/public/index-v3.html \
     && chmod 0755 /usr/local/bin/dashboard-entrypoint.sh
 
 ENV NODE_ENV=production
