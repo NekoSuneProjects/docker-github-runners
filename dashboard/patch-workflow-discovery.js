@@ -14,7 +14,10 @@ const oldReposToSync = `async function reposToSync() {
 }`;
 
 const newReposToSync = `function normalizeRepoName(value) {
-  const raw = String(value || '').trim().replace(/^https:\/\/github\\.com\//i, '').replace(/\\.git$/i, '');
+  let raw = String(value || '').trim();
+  const githubPrefix = 'https://github.com/';
+  if (raw.toLowerCase().startsWith(githubPrefix)) raw = raw.slice(githubPrefix.length);
+  if (raw.toLowerCase().endsWith('.git')) raw = raw.slice(0, -4);
   if (!raw) return '';
   if (!raw.includes('/')) return raw;
   const parts = raw.split('/').filter(Boolean);
