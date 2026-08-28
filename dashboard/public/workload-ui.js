@@ -1,6 +1,6 @@
 (()=>{
 let state={overview:null,nodes:null};
-const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot',"'":'&#39;'}[c]));
+const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const ago=v=>{const t=Date.parse(v||'');if(!Number.isFinite(t))return'';const s=Math.max(0,Math.floor((Date.now()-t)/1000));if(s<60)return`${s}s ago`;if(s<3600)return`${Math.floor(s/60)}m ago`;return`${Math.floor(s/3600)}h ago`};
 const repoName=v=>String(v||'').trim().replace(/^https:\/\/github\.com\//i,'').replace(/\.git$/i,'').split('/').filter(Boolean).pop()||'';
 function nodes(){return state.nodes?.nodes||[]}
