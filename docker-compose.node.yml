@@ -44,23 +44,23 @@ services:
       NODE_LABELS: ${LABELS:-docker,buildx,multiarch,builder}
       NODE_HEARTBEAT_SECONDS: ${NODE_HEARTBEAT_SECONDS:-10}
       NODE_LOG_TAIL_BYTES: ${NODE_LOG_TAIL_BYTES:-131072}
+      NODE_RUNNER_STATUS_CACHE_SECONDS: ${NODE_RUNNER_STATUS_CACHE_SECONDS:-90}
       RUNNER_DIAG_DIR: /runner-diag
+      RUNNER_WORK_DIR: /runner-work
       NODE_HOST_ROOT: /host
-
       NODE_STUCK_WATCHDOG_ENABLED: ${NODE_STUCK_WATCHDOG_ENABLED:-true}
       NODE_STUCK_THRESHOLD_SECONDS: ${NODE_STUCK_THRESHOLD_SECONDS:-600}
       NODE_AUTO_RECOVER_STUCK: ${NODE_AUTO_RECOVER_STUCK:-false}
       NODE_STUCK_RECOVERY_COOLDOWN_SECONDS: ${NODE_STUCK_RECOVERY_COOLDOWN_SECONDS:-900}
-
       NODE_AUTO_RECOVER_OFFLINE: ${NODE_AUTO_RECOVER_OFFLINE:-true}
       NODE_RUNNER_HEALTHCHECK_SECONDS: ${NODE_RUNNER_HEALTHCHECK_SECONDS:-30}
       NODE_RUNNER_OFFLINE_RECOVERY_SECONDS: ${NODE_RUNNER_OFFLINE_RECOVERY_SECONDS:-120}
       NODE_RUNNER_OFFLINE_RECOVERY_COOLDOWN_SECONDS: ${NODE_RUNNER_OFFLINE_RECOVERY_COOLDOWN_SECONDS:-600}
       NODE_RUNNER_CONTAINER_LABEL: neko.runner.managed=true
-
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - runner-diag:/runner-diag
+      - runner-work:/runner-work:ro
       - /etc/hostname:/host/etc/hostname:ro
       - /etc/os-release:/host/etc/os-release:ro
       - /proc:/host/proc:ro
