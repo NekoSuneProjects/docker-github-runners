@@ -56,6 +56,7 @@ patchFile('/app/server-websocket.js', [
         };
         const result=db.prepare('UPDATE nodes SET workload_json=? WHERE id=?').run(JSON.stringify(safe),id);
         if(!result.changes)return json(res,404,{error:'Node not found'});
+        process.emit('neko:node-workload',{node_id:id,runner_name:String(body.runner_name||''),runner_busy:body.runner_busy,...safe});
         setTimeout(broadcastNodes,10);
         return json(res,200,{ok:true,node_id:id,current_workload:safe});
       }catch(err){return json(res,400,{error:err.message||'Invalid workload payload'})}
