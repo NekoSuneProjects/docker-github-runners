@@ -14,7 +14,10 @@ const oldReposToSync = `async function reposToSync() {
 }`;
 
 const newReposToSync = `function normalizeRepoName(value) {
-  const raw = String(value || '').trim().replace(/^https:\/\/github\\.com\//i, '').replace(/\\.git$/i, '');
+  let raw = String(value || '').trim();
+  const githubPrefix = 'https://github.com/';
+  if (raw.toLowerCase().startsWith(githubPrefix)) raw = raw.slice(githubPrefix.length);
+  if (raw.toLowerCase().endsWith('.git')) raw = raw.slice(0, -4);
   if (!raw) return '';
   if (!raw.includes('/')) return raw;
   const parts = raw.split('/').filter(Boolean);
@@ -52,7 +55,8 @@ async function reposToSync() {
   }
 
   // Active node workloads always win a slot. Recently pushed repositories are
-  // then refreshed from GitHub so SQLite can never freeze discovery forever.
+  // refreshed from GitHub on every slow periodic sync so SQLite cannot freeze
+  // discovery onto the first set of repositories it happened to learn.
   return [...new Set([...active, ...discovered, ...stored])].slice(0, MAX_REPOS);
 }`;
 
@@ -73,8 +77,8 @@ async function syncNodeWorkload(payload) {
   if (now - previous < NODE_WORKFLOW_SYNC_SECONDS * 1000) return;
   nodeWorkflowSyncAt.set(repo, now);
 
-  // If a slower periodic sync is already running, wait for it to release the
-  // store lock and then do one targeted refresh of the active repository.
+  // Wait for a slower periodic sync to finish, then perform one targeted
+  // refresh for the repository that a self-hosted node says is active.
   if (syncing) await syncing.catch(() => {});
   await sync('node-workload', repo);
 }
