@@ -18,12 +18,16 @@ COPY github-persistent-cache.js /app/github-persistent-cache.js
 COPY github-runner-store.js /app/github-runner-store.js
 COPY github-workflow-store.js /app/github-workflow-store.js
 COPY patch-workload.js /app/patch-workload.js
+COPY patch-workflow-discovery.js /app/patch-workflow-discovery.js
 COPY public /app/public
 COPY entrypoint.sh /usr/local/bin/dashboard-entrypoint.sh
 
 RUN node --check /app/patch-workload.js \
+    && node --check /app/patch-workflow-discovery.js \
     && node --check /app/public/workload-ui.js \
+    && node /app/patch-workflow-discovery.js \
     && node /app/patch-workload.js \
+    && node --check /app/github-workflow-store.js \
     && node --check /app/server.js \
     && node --check /app/server-websocket.js \
     && sed -i 's#</body>#<script src="/runner-controls-v3.js"></script><script src="/workload-ui.js"></script></body>#' /app/public/index-v3.html \
