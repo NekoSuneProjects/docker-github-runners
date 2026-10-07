@@ -59,10 +59,29 @@ On another AMD64 or ARM64 Linux machine, clone this repository and create its en
 cp .env.node.example .env
 ```
 
-Set:
+Set either PAT/token authentication or GitHub App authentication.
+
+Recommended GitHub App mode for multi-org nodes:
 
 ```env
+GITHUB_AUTH_MODE=app
+GITHUB_APP_ID=123456
+GITHUB_APP_PRIVATE_KEY_BASE64=PASTE_BASE64_PRIVATE_KEY_HERE
+ACCESS_TOKEN=
+```
+
+The same App must be installed on each organization/personal account that this node should manage. See `GITHUB-APP.md` for the required App permissions and installation steps.
+
+PAT compatibility mode:
+
+```env
+GITHUB_AUTH_MODE=token
 ACCESS_TOKEN=github_pat_...
+```
+
+Then configure the targets:
+
+```env
 
 # Discover every active org where this account is an org admin.
 GITHUB_ORGS=auto
