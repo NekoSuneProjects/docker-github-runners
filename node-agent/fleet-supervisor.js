@@ -103,7 +103,7 @@ async function detectCapabilities() {
   labels.add('neko-any');
 
   if (size === 'small') labels.add('neko-lite');
-  if (size === 'medium') labels.add('neko-build');
+  if (size === 'medium' || size === 'large') labels.add('neko-build');
   if (size === 'large') labels.add('neko-heavy');
   if (gpu) labels.add('neko-gpu');
 
