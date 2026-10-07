@@ -109,6 +109,89 @@ GPU    -> neko-gpu
 
 Use those labels in `runs-on` so lightweight jobs use small nodes and builds/GPU jobs use the appropriate larger hosts. The node-agent also pushes the current custom label set to GitHub's runner settings on every reconcile, replacing stale custom labels automatically. GitHub runner selection happens before the workflow steps execute, so this explicit workload label is required for reliable routing.
 
+### Verify the labels in GitHub
+
+After the node-agent reconciles, open the runner in:
+
+```text
+GitHub
+→ Settings
+→ Actions
+→ Runners
+→ select the runner
+```
+
+A small node should include:
+
+```text
+neko-any
+neko-size-small
+neko-lite
+```
+
+A medium node should include:
+
+```text
+neko-any
+neko-size-medium
+neko-build
+```
+
+A large node should include:
+
+```text
+neko-any
+neko-size-large
+neko-build
+neko-heavy
+```
+
+GPU-capable nodes additionally include:
+
+```text
+neko-gpu
+```
+
+Base custom labels such as `docker`, `buildx`, `multiarch`, and `builder` are synchronized at the same time.
+
+The synchronization replaces GitHub's complete custom-label set for the runner. This is intentional: if a server is reclassified from large to small, stale labels such as `neko-heavy` are removed automatically.
+
+GitHub's built-in runner labels (`self-hosted`, operating system, and architecture) are not part of this custom-label replacement.
+
+### Workflow examples
+
+Small/light work:
+
+```yaml
+runs-on: [self-hosted, neko-lite]
+```
+
+Normal build work:
+
+```yaml
+runs-on: [self-hosted, neko-build]
+```
+
+Large/heavy work:
+
+```yaml
+runs-on: [self-hosted, neko-heavy]
+```
+
+GPU work:
+
+```yaml
+runs-on: [self-hosted, neko-gpu]
+```
+
+Large GPU work:
+
+```yaml
+runs-on: [self-hosted, neko-heavy, neko-gpu]
+```
+
+Because all organization and personal-repository runners on one physical server still share the node execution lock, these labels control **which physical server GitHub selects**, while the shared lock still limits that server to one active job at a time.
+
 Start the remote stack:
 
 ```bash
