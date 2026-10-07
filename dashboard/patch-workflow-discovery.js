@@ -54,9 +54,6 @@ async function reposToSync() {
     if (!active.length && !stored.length) throw err;
   }
 
-  // Active node workloads always win a slot. Recently pushed repositories are
-  // refreshed from GitHub on every slow periodic sync so SQLite cannot freeze
-  // discovery onto the first set of repositories it happened to learn.
   return [...new Set([...active, ...discovered, ...stored])].slice(0, MAX_REPOS);
 }`;
 
@@ -77,8 +74,6 @@ async function syncNodeWorkload(payload) {
   if (now - previous < NODE_WORKFLOW_SYNC_SECONDS * 1000) return;
   nodeWorkflowSyncAt.set(repo, now);
 
-  // Wait for a slower periodic sync to finish, then perform one targeted
-  // refresh for the repository that a self-hosted node says is active.
   if (syncing) await syncing.catch(() => {});
   await sync('node-workload', repo);
 }
