@@ -150,17 +150,59 @@ function exec(command, args, timeout = 120000) {
   });
 }
 
-async function github(pathname) {
+async function github(pathname, options = {}) {
   const r = await fetch(`https://api.github.com${pathname}`, {
+    method: options.method || 'GET',
     headers: {
       Authorization: `Bearer ${ACCESS_TOKEN}`,
       Accept: 'application/vnd.github+json',
-      'X-GitHub-Api-Version': '2022-11-28',
-      'User-Agent': 'neko-github-runner-fleet/1.1',
+      'X-GitHub-Api-Version': '2026-03-10',
+      'User-Agent': 'neko-github-runner-fleet/1.2',
+      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
     },
+    body: options.body ? JSON.stringify(options.body) : undefined,
   });
   if (!r.ok) throw new Error(`GitHub ${r.status} for ${pathname}: ${(await r.text()).slice(0, 220)}`);
+  if (r.status === 204) return {};
   return r.json();
+}
+
+function runnerApiBase(target) {
+  return target.scope === 'organization'
+    ? `/orgs/${encodeURIComponent(target.org)}/actions/runners`
+    : `/repos/${target.repo.split('/').map(encodeURIComponent).join('/')}/actions/runners`;
+}
+
+async function findGitHubRunner(target, name) {
+  const base = runnerApiBase(target);
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const data = await github(`${base}?per_page=100`);
+    const runner = (data.runners || []).find(v => v.name === name);
+    if (runner) return runner;
+    if (attempt < 9) await new Promise(resolve => setTimeout(resolve, 1500));
+  }
+  return null;
+}
+
+async function syncGitHubRunnerLabels(target, name, labels) {
+  const runner = await findGitHubRunner(target, name);
+  if (!runner) {
+    throw new Error(`Runner ${name} is not visible in GitHub yet for ${targetKey(target)}`);
+  }
+
+  const desired = [...new Set(labels.map(v => String(v).trim()).filter(Boolean))].slice(0, 100);
+  const result = await github(
+    `${runnerApiBase(target)}/${runner.id}/labels`,
+    { method: 'PUT', body: { labels: desired } },
+  );
+
+  const applied = (result.labels || [])
+    .filter(v => v.type === 'custom')
+    .map(v => v.name)
+    .sort();
+
+  console.log(`[fleet] GitHub labels synced for ${name}: ${applied.join(',') || '(none)'}`);
+  return applied;
 }
 
 async function discoverOrgs() {
@@ -309,6 +351,7 @@ async function ensureRunner(target, capabilities) {
         console.log(`[fleet] starting ${targetKey(target)} runner ${id}`);
         await exec('docker', ['start', id], 60000);
       }
+      await syncGitHubRunnerLabels(target, runnerName(target), capabilities.labels);
       return;
     }
   }
@@ -353,6 +396,7 @@ async function ensureRunner(target, capabilities) {
 
   args.push(RUNNER_IMAGE);
   await exec('docker', args, 120000);
+  await syncGitHubRunnerLabels(target, name, capabilities.labels);
 }
 
 async function removeUnknownRunners(desired) {
