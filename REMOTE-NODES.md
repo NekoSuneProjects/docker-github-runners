@@ -59,44 +59,13 @@ On another AMD64 or ARM64 Linux machine, clone this repository and create its en
 cp .env.node.example .env
 ```
 
-Set either PAT/token authentication or GitHub App authentication.
+Remote nodes are intentionally credential-free. GitHub App/PAT credentials and org/repository selection are configured only on the central dashboard.
 
-Recommended GitHub App mode for multi-org nodes:
-
-```env
-GITHUB_AUTH_MODE=app
-GITHUB_APP_ID=123456
-GITHUB_APP_PRIVATE_KEY_BASE64=PASTE_BASE64_PRIVATE_KEY_HERE
-ACCESS_TOKEN=
-```
-
-The same App must be installed on each organization/personal account that this node should manage. See `GITHUB-APP.md` for the required App permissions and installation steps.
-
-PAT compatibility mode:
+Remote node configuration:
 
 ```env
-GITHUB_AUTH_MODE=token
-ACCESS_TOKEN=github_pat_...
-```
-
-Then configure the targets:
-
-```env
-
-# Discover every active org where this account is an org admin.
-GITHUB_ORGS=auto
-
-# Or set an explicit list:
-# GITHUB_ORGS=NekoSuneProjects,NekoSuneProjectsForks,AnotherOrg
-
-GITHUB_ORG_INCLUDE=
-GITHUB_ORG_EXCLUDE=
-
-# Also discover repositories owned by your personal GitHub account.
-GITHUB_PERSONAL_REPOS=auto
-GITHUB_PERSONAL_REPO_INCLUDE=
-GITHUB_PERSONAL_REPO_EXCLUDE=
-GITHUB_PERSONAL_INCLUDE_ARCHIVED=false
+CENTRAL_DASHBOARD_URL=https://runner-dashboard.example.com
+DASHBOARD_NODE_SHARED_SECRET=THE_SAME_SECRET_AS_THE_CENTRAL_DASHBOARD
 
 RUNNER_NAME_PREFIX=uk-vps-02
 
