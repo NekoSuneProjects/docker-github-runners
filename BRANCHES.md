@@ -1,33 +1,67 @@
 # Component branches
 
-This repository is split so slow self-hosted VPS runners do not rebuild every image for unrelated changes.
+The repository is intentionally split into three runtime branches plus this documentation-only `main` branch.
 
-| Branch | Component | Published image | Automatic trigger |
+| Branch | Component | Published image | Build trigger |
 | --- | --- | --- | --- |
-| `runner` | GitHub Actions runner | `ghcr.io/nekosuneprojects/docker-github-runners:latest` | Changes to `Dockerfile`, `start.sh`, runner entrypoint, or its workflow |
-| `dashboard` | Central web dashboard + SQLite history | `ghcr.io/nekosuneprojects/docker-github-runners-dashboard:latest` | Changes under `dashboard/` |
-| `agent` | Remote node telemetry/cleanup agent | `ghcr.io/nekosuneprojects/docker-github-runners-node-agent:latest` | Changes under `node-agent/` |
-| `main` | Integration Compose/examples/docs | all three only when manually dispatched | No automatic image build |
+| `runner` | GitHub Actions runner | `ghcr.io/nekosuneprojects/docker-github-runners:latest` | Pushes affecting runner image files on `runner` |
+| `dashboard` | Dashboard + credential broker/control plane | `ghcr.io/nekosuneprojects/docker-github-runners-dashboard:latest` | Pushes affecting `dashboard/**` on `dashboard` |
+| `agent` | Worker/node agent + fleet controller | `ghcr.io/nekosuneprojects/docker-github-runners-node-agent:latest` | Pushes affecting `node-agent/**` on `agent` |
+| `main` | Documentation and architecture index only | none | no image workflow |
 
-All component images are still published for both `linux/amd64` and `linux/arm64`.
+All runtime images target:
 
-## Recommended development flow
+```text
+linux/amd64
+linux/arm64
+```
 
-Make runner-only changes on `runner`, dashboard-only changes on `dashboard`, and agent-only changes on `agent`. Use `main` for Compose files, environment examples, and coordinated releases.
+## Ownership
 
-The `main` workflow is intentionally `workflow_dispatch` only. This prevents documentation/Compose changes from consuming hours rebuilding three images.
+### runner
 
-## Storage cleanup design
+Owns:
 
-The node agent reports Docker reclaimable space and local runner diagnostic size to the central dashboard. The dashboard stores log snapshots and cleanup history in `/data/dashboard.sqlite` before cleanup commands are sent back to a node.
+- runner `Dockerfile`
+- `start.sh`
+- runner job-start/job-complete hooks
+- runner entrypoint
+- runner-specific `.env.example`
+- runner image workflow
 
-Per-node dashboard controls include:
+### dashboard
 
-- Auto-clean after a GitHub runner changes from busy to idle.
-- Manual cleanup.
-- Optional removal of unused Docker volumes (off by default).
-- Reported reclaimable bytes.
-- SQLite-backed runner log history.
-- Cleanup history and reclaimed-byte totals.
+Owns:
 
-Default cleanup removes Buildx cache when available, stopped containers, unused images, unused networks, and archived local runner diagnostics. Running containers and active images are not removed. Docker volumes are not pruned unless the per-node volume option is explicitly enabled.
+- dashboard application
+- GitHub App / PAT credential broker
+- organization and personal-repository target discovery
+- GitHub runner registration/removal APIs
+- runner label synchronization
+- dashboard-specific `.env.example`
+- dashboard image workflow
+
+### agent
+
+Owns:
+
+- node heartbeat/telemetry
+- fleet supervisor
+- VPS capacity classification
+- small/medium/large/GPU routing
+- physical-node one-job lock coordination
+- remote-node Compose/config
+- agent-specific env examples
+- agent image workflow
+
+### main
+
+Contains documentation only. Runtime code, Dockerfiles, Compose files, shell scripts, environment templates, and image workflows do not belong on `main`.
+
+## Development flow
+
+Make changes directly to the branch that owns the component.
+
+Cross-component changes should be applied to each affected component branch rather than rebuilding all images from `main`.
+
+The dashboard remains the only component that should hold long-lived GitHub credentials.
