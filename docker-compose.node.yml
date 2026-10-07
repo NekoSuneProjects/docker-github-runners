@@ -21,6 +21,10 @@ services:
       GITHUB_ORGS: ${GITHUB_ORGS:-auto}
       GITHUB_ORG_INCLUDE: ${GITHUB_ORG_INCLUDE:-}
       GITHUB_ORG_EXCLUDE: ${GITHUB_ORG_EXCLUDE:-}
+      GITHUB_PERSONAL_REPOS: ${GITHUB_PERSONAL_REPOS:-auto}
+      GITHUB_PERSONAL_REPO_INCLUDE: ${GITHUB_PERSONAL_REPO_INCLUDE:-}
+      GITHUB_PERSONAL_REPO_EXCLUDE: ${GITHUB_PERSONAL_REPO_EXCLUDE:-}
+      GITHUB_PERSONAL_INCLUDE_ARCHIVED: ${GITHUB_PERSONAL_INCLUDE_ARCHIVED:-false}
 
       RUNNER_IMAGE: ${RUNNER_IMAGE:-ghcr.io/nekosuneprojects/docker-github-runners:latest}
       RUNNER_NAME_PREFIX: ${RUNNER_NAME_PREFIX:-${NODE_ID:-neko-node}}
@@ -36,7 +40,7 @@ services:
       NODE_FLEET_RECONCILE_SECONDS: ${NODE_FLEET_RECONCILE_SECONDS:-120}
 
       # Dashboard heartbeat compatibility. Fleet mode reports the physical node;
-      # individual org runner state remains available through GitHub.
+      # individual org/repository runner state remains available through GitHub.
       RUNNER_NAME: ${RUNNER_NAME_PREFIX:-${NODE_ID:-neko-node}}
       RUNNER_SCOPE: organization
       GITHUB_ORG: ""
