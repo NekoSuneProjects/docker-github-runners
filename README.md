@@ -189,7 +189,7 @@ medium: everything in between
 
 GPU capability is detected from the host Docker runtime's NVIDIA support. You can override detection with `NODE_CAPACITY_CLASS=small|medium|large` and `NODE_GPU=true|false`.
 
-GitHub selects a self-hosted runner before workflow steps execute, so the workflow must state the workload class it needs. For example:
+GitHub selects a self-hosted runner before workflow steps execute, so the workflow must state the workload class it needs. The fleet also actively synchronizes these custom labels into GitHub Settings → Actions → Runners on every reconcile cycle, so changing a node from small to medium/large or enabling GPU updates the visible GitHub runner labels automatically. For example:
 
 ```yaml
 jobs:
