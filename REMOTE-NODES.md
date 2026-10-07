@@ -107,7 +107,7 @@ large  -> neko-build, neko-heavy
 GPU    -> neko-gpu
 ```
 
-Use those labels in `runs-on` so lightweight jobs use small nodes and builds/GPU jobs use the appropriate larger hosts. GitHub runner selection happens before the workflow steps execute, so this explicit workload label is required for reliable routing.
+Use those labels in `runs-on` so lightweight jobs use small nodes and builds/GPU jobs use the appropriate larger hosts. The node-agent also pushes the current custom label set to GitHub's runner settings on every reconcile, replacing stale custom labels automatically. GitHub runner selection happens before the workflow steps execute, so this explicit workload label is required for reliable routing.
 
 Start the remote stack:
 
