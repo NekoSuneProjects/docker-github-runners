@@ -27,7 +27,7 @@ const RECOVERY_COOLDOWN_SECONDS = Math.max(300, Math.min(Number(process.env.NODE
 const RUNNER_CONTAINER_NAME = String(process.env.NODE_RUNNER_CONTAINER_NAME || '').trim();
 const RUNNER_CONTAINER_LABEL = String(process.env.NODE_RUNNER_CONTAINER_LABEL || 'neko.runner.managed=true').trim();
 
-const AGENT_VERSION = '2.1.0';
+const AGENT_VERSION = '2.2.0';
 let stopping = false;
 let timer = null;
 let requestController = null;
@@ -36,6 +36,9 @@ let recoveryResult = null;
 let cleaning = false;
 let recovering = false;
 let lastRecoveryAt = 0;
+const RUNNER_STATUS_CACHE_SECONDS = Math.max(30, Math.min(Number(process.env.NODE_RUNNER_STATUS_CACHE_SECONDS || 90), 600));
+let runnerBusyCachedValue = null;
+let runnerBusyCachedAt = 0;
 
 if (!/^https?:\/\//i.test(DASHBOARD_URL)) { console.error('ERROR: DASHBOARD_URL must be http:// or https://'); process.exit(1); }
 if (NODE_TOKEN.length < 32) { console.error('ERROR: DASHBOARD_NODE_SHARED_SECRET must be at least 32 characters'); process.exit(1); }
@@ -102,7 +105,7 @@ async function diagStats() {
   } finally { await handle.close(); }
 }
 
-async function runnerBusy() {
+async function runnerBusyFetch() {
   if (!ACCESS_TOKEN || !RUNNER_NAME) return null;
   let endpoint;
   if (/^(organization|org)$/i.test(RUNNER_SCOPE) && GITHUB_ORG) endpoint = `/orgs/${encodeURIComponent(GITHUB_ORG)}/actions/runners?per_page=100`;
@@ -118,6 +121,25 @@ async function runnerBusy() {
     const runner = (data.runners || []).find(v => v.name === RUNNER_NAME);
     return runner ? Boolean(runner.busy) : null;
   } catch { return null; }
+}
+
+async function runnerBusy(force = false) {
+  const age = Date.now() - runnerBusyCachedAt;
+  if (!force && runnerBusyCachedAt && age < RUNNER_STATUS_CACHE_SECONDS * 1000) return runnerBusyCachedValue;
+
+  const value = await runnerBusyFetch();
+
+  // Preserve the last known state through temporary API failures/rate limits.
+  // On the first unknown lookup, keep null rather than incorrectly reporting idle.
+  if (value !== null) {
+    runnerBusyCachedValue = value;
+    runnerBusyCachedAt = Date.now();
+  } else if (!runnerBusyCachedAt) {
+    runnerBusyCachedValue = null;
+    runnerBusyCachedAt = Date.now();
+  }
+
+  return runnerBusyCachedValue;
 }
 
 function watchdogState(busy, diag) {
@@ -164,7 +186,7 @@ async function maybeRecoverStuck(watchdog) {
     // Confirm GitHub still considers this runner busy immediately before we
     // restart anything. This avoids recovering a job that finished between
     // heartbeat collection and watchdog execution.
-    if (await runnerBusy() !== true) return;
+    if (await runnerBusy(true) !== true) return;
 
     const container = await findRunnerContainer();
     if (!container) {
@@ -237,7 +259,7 @@ async function runCleanup(action) {
   if (cleaning || recovering || !action?.id) return;
   cleaning = true;
 
-  if (sharedJobLocked() || await runnerBusy() === true) {
+  if (sharedJobLocked() || await runnerBusy(true) === true) {
     console.log(`[cleanup] deferred ${action.id}: runner became busy`);
     cleaning = false;
     return;
