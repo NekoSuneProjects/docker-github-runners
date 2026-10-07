@@ -39,6 +39,14 @@ services:
       NODE_SHARED_LOCK_STALE_SECONDS: ${NODE_SHARED_LOCK_STALE_SECONDS:-259200}
       NODE_FLEET_RECONCILE_SECONDS: ${NODE_FLEET_RECONCILE_SECONDS:-120}
 
+      # Automatic physical-node sizing and routing labels.
+      NODE_CAPACITY_CLASS: ${NODE_CAPACITY_CLASS:-auto}
+      NODE_GPU: ${NODE_GPU:-auto}
+      NODE_SMALL_MAX_CPU: ${NODE_SMALL_MAX_CPU:-2}
+      NODE_SMALL_MAX_RAM_GB: ${NODE_SMALL_MAX_RAM_GB:-4}
+      NODE_LARGE_MIN_CPU: ${NODE_LARGE_MIN_CPU:-8}
+      NODE_LARGE_MIN_RAM_GB: ${NODE_LARGE_MIN_RAM_GB:-16}
+
       # Dashboard heartbeat compatibility. Fleet mode reports the physical node;
       # individual org/repository runner state remains available through GitHub.
       RUNNER_NAME: ${RUNNER_NAME_PREFIX:-${NODE_ID:-neko-node}}
