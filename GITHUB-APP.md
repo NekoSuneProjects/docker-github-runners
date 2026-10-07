@@ -143,9 +143,9 @@ Example:
 GITHUB_APP_ID=123456
 ```
 
-## 6. Configure the runner node
+## 6. Configure the central dashboard
 
-Recommended configuration:
+Recommended dashboard configuration:
 
 ```env
 GITHUB_AUTH_MODE=app
@@ -179,32 +179,44 @@ RUNNER_NAME_PREFIX=uk-vps-02
 LABELS=docker,buildx,multiarch,builder
 ```
 
-Then start/recreate the node:
+Then recreate the central dashboard/control plane:
 
 ```bash
-docker compose -f docker-compose.node.yml pull
-docker compose -f docker-compose.node.yml up -d --force-recreate
-docker compose -f docker-compose.node.yml logs -f node-agent
+docker compose pull
+docker compose up -d --force-recreate
 ```
+
+Remote workers use a separate credential-free configuration:
+
+```env
+CENTRAL_DASHBOARD_URL=https://runner-dashboard.example.com
+DASHBOARD_NODE_SHARED_SECRET=THE_SHARED_NODE_SECRET
+
+NODE_ID=uk-vps-02
+NODE_NAME=UK Builder 02
+RUNNER_NAME_PREFIX=uk-vps-02
+```
+
+No GitHub credential belongs in the remote worker `.env`.
 
 ## How App mode works
 
-The node-agent keeps the App private key only in the node-agent container.
+The central dashboard keeps the App private key. Worker node-agents never receive the App private key, PAT, or installation access token.
 
-For API operations it:
+For API operations the dashboard:
 
 1. creates an RS256 GitHub App JWT;
 2. finds the App installation for the target organization or repository;
-3. requests a short-lived installation access token;
-4. caches that installation token until shortly before expiry;
-5. uses the target installation token to register/manage the appropriate runner;
-6. synchronizes runner custom labels through that same target installation.
+3. requests and caches a short-lived installation access token;
+4. performs runner discovery, stale-registration removal and label updates itself;
+5. creates a short-lived GitHub runner registration token;
+6. returns only that registration token and target URL to the authenticated worker node.
 
-Installation access tokens expire after roughly one hour. The fleet refreshes its API token cache before expiry.
+The worker uses the registration token only to configure the GitHub Actions runner. It never receives the GitHub App private key or installation access token.
 
-A running GitHub Actions runner does not need to be restarted every hour. In App mode, a stopped runner container is recreated with a fresh installation token when registration is needed again.
+Installation access tokens remain inside the dashboard. The dashboard refreshes them before expiry.
 
-The App private key is never injected into the individual runner containers.
+The node authenticates to the dashboard with `DASHBOARD_NODE_SHARED_SECRET` over HTTPS.
 
 ## Automatic organization discovery
 
