@@ -5,16 +5,7 @@ const os = require('os');
 const { spawn, execFile } = require('child_process');
 
 const DASHBOARD_URL = String(process.env.DASHBOARD_URL || '').replace(/\/+$/, '');
-const ACCESS_TOKEN = String(process.env.ACCESS_TOKEN || '');
-
-const RAW_ORGS = String(process.env.GITHUB_ORGS || '').trim();
-const ORG_INCLUDE = csv(process.env.GITHUB_ORG_INCLUDE);
-const ORG_EXCLUDE = lowerSet(process.env.GITHUB_ORG_EXCLUDE);
-
-const RAW_PERSONAL_REPOS = String(process.env.GITHUB_PERSONAL_REPOS || '').trim();
-const PERSONAL_INCLUDE = csv(process.env.GITHUB_PERSONAL_REPO_INCLUDE);
-const PERSONAL_EXCLUDE = lowerSet(process.env.GITHUB_PERSONAL_REPO_EXCLUDE);
-const INCLUDE_ARCHIVED = truthy(process.env.GITHUB_PERSONAL_INCLUDE_ARCHIVED || 'false');
+const NODE_TOKEN = String(process.env.DASHBOARD_NODE_SHARED_SECRET || '');
 
 const NODE_ID = safe(process.env.NODE_ID || 'node');
 const PREFIX = safe(process.env.RUNNER_NAME_PREFIX || process.env.RUNNER_NAME || NODE_ID || 'neko-runner');
@@ -44,14 +35,6 @@ function csv(value) {
   return String(value || '').split(',').map(v => v.trim()).filter(Boolean);
 }
 
-function lowerSet(value) {
-  return new Set(csv(value).map(v => v.toLowerCase()));
-}
-
-function truthy(value) {
-  return /^(1|true|yes|on)$/i.test(String(value || ''));
-}
-
 function safe(value) {
   return String(value || '').trim().replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 70);
 }
@@ -71,6 +54,37 @@ function hostMemoryBytes() {
   const match = /^MemTotal:\s+(\d+)\s+kB/im.exec(text);
   if (match) return Number(match[1]) * 1024;
   return os.totalmem();
+}
+
+function exec(command, args, timeout = 120000) {
+  return new Promise((resolve, reject) => {
+    execFile(command, args, { timeout, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
+      if (err) return reject(Object.assign(err, { output: `${stdout || ''}\n${stderr || ''}`.trim() }));
+      resolve(String(stdout || '') + String(stderr || ''));
+    });
+  });
+}
+
+async function broker(pathname, options = {}) {
+  const r = await fetch(`${DASHBOARD_URL}${pathname}`, {
+    method: options.method || 'GET',
+    headers: {
+      Authorization: `Bearer ${NODE_TOKEN}`,
+      Accept: 'application/json',
+      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+      'User-Agent': 'neko-runner-fleet-worker/2.0',
+    },
+    body: options.body ? JSON.stringify(options.body) : undefined,
+  });
+
+  const text = await r.text();
+  let data = {};
+  try { data = text ? JSON.parse(text) : {}; } catch {}
+
+  if (!r.ok) {
+    throw new Error(`dashboard broker ${r.status}: ${data.error || text.slice(0, 300) || r.statusText}`);
+  }
+  return data;
 }
 
 async function detectGpu() {
@@ -101,7 +115,6 @@ async function detectCapabilities() {
   const labels = new Set(csv(LABELS));
   labels.add(`neko-size-${size}`);
   labels.add('neko-any');
-
   if (size === 'small') labels.add('neko-lite');
   if (size === 'medium' || size === 'large') labels.add('neko-build');
   if (size === 'large') labels.add('neko-heavy');
@@ -118,184 +131,17 @@ async function detectCapabilities() {
   };
 }
 
-async function existingRunnerFingerprint(id) {
-  if (!id) return '';
-  try {
-    return (await exec('docker', [
-      'inspect', '-f',
-      '{{ index .Config.Labels "neko.runner.capability-fingerprint" }}',
-      id,
-    ], 15000)).trim();
-  } catch {
-    return '';
-  }
-}
-
 function targetKey(target) {
   return target.scope === 'organization'
     ? `org:${target.org.toLowerCase()}`
     : `repo:${target.repo.toLowerCase()}`;
 }
 
-function targetLabel(target) {
-  return target.scope === 'organization' ? target.org : target.repo;
-}
-
-function exec(command, args, timeout = 120000) {
-  return new Promise((resolve, reject) => {
-    execFile(command, args, { timeout, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
-      if (err) return reject(Object.assign(err, { output: `${stdout || ''}\n${stderr || ''}`.trim() }));
-      resolve(String(stdout || '') + String(stderr || ''));
-    });
-  });
-}
-
-async function github(pathname, options = {}) {
-  const r = await fetch(`https://api.github.com${pathname}`, {
-    method: options.method || 'GET',
-    headers: {
-      Authorization: `Bearer ${ACCESS_TOKEN}`,
-      Accept: 'application/vnd.github+json',
-      'X-GitHub-Api-Version': '2026-03-10',
-      'User-Agent': 'neko-github-runner-fleet/1.2',
-      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
-    },
-    body: options.body ? JSON.stringify(options.body) : undefined,
-  });
-  if (!r.ok) throw new Error(`GitHub ${r.status} for ${pathname}: ${(await r.text()).slice(0, 220)}`);
-  if (r.status === 204) return {};
-  return r.json();
-}
-
-function runnerApiBase(target) {
-  return target.scope === 'organization'
-    ? `/orgs/${encodeURIComponent(target.org)}/actions/runners`
-    : `/repos/${target.repo.split('/').map(encodeURIComponent).join('/')}/actions/runners`;
-}
-
-async function findGitHubRunner(target, name) {
-  const base = runnerApiBase(target);
-  for (let attempt = 0; attempt < 10; attempt++) {
-    const data = await github(`${base}?per_page=100`);
-    const runner = (data.runners || []).find(v => v.name === name);
-    if (runner) return runner;
-    if (attempt < 9) await new Promise(resolve => setTimeout(resolve, 1500));
-  }
+function targetFromKey(key) {
+  const value = String(key || '');
+  if (value.startsWith('org:') && value.slice(4)) return { scope:'organization', org:value.slice(4) };
+  if (value.startsWith('repo:') && value.slice(5).includes('/')) return { scope:'repository', repo:value.slice(5) };
   return null;
-}
-
-async function syncGitHubRunnerLabels(target, name, labels) {
-  const runner = await findGitHubRunner(target, name);
-  if (!runner) {
-    throw new Error(`Runner ${name} is not visible in GitHub yet for ${targetKey(target)}`);
-  }
-
-  const desired = [...new Set(labels.map(v => String(v).trim()).filter(Boolean))].slice(0, 100);
-  const result = await github(
-    `${runnerApiBase(target)}/${runner.id}/labels`,
-    { method: 'PUT', body: { labels: desired } },
-  );
-
-  const applied = (result.labels || [])
-    .filter(v => v.type === 'custom')
-    .map(v => v.name)
-    .sort();
-
-  console.log(`[fleet] GitHub labels synced for ${name}: ${applied.join(',') || '(none)'}`);
-  return applied;
-}
-
-async function discoverOrgs() {
-  if (!RAW_ORGS || /^(none|off|false)$/i.test(RAW_ORGS)) return [];
-
-  let orgs;
-  if (/^(auto|\*)$/i.test(RAW_ORGS)) {
-    orgs = [];
-    for (let page = 1; page <= 10; page++) {
-      const rows = await github(`/user/memberships/orgs?state=active&per_page=100&page=${page}`);
-      if (!Array.isArray(rows) || !rows.length) break;
-      for (const row of rows) {
-        if (row?.role === 'admin' && row?.organization?.login) orgs.push(row.organization.login);
-      }
-      if (rows.length < 100) break;
-    }
-  } else {
-    orgs = csv(RAW_ORGS);
-  }
-
-  if (ORG_INCLUDE.length) {
-    const allow = new Set(ORG_INCLUDE.map(v => v.toLowerCase()));
-    orgs = orgs.filter(v => allow.has(v.toLowerCase()));
-  }
-  orgs = orgs.filter(v => !ORG_EXCLUDE.has(v.toLowerCase()));
-
-  const seen = new Set();
-  return orgs.filter(org => {
-    const key = org.toLowerCase();
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  }).map(org => ({ scope: 'organization', org }));
-}
-
-async function discoverPersonalRepos() {
-  if (!RAW_PERSONAL_REPOS || /^(none|off|false)$/i.test(RAW_PERSONAL_REPOS)) return [];
-
-  let repos = [];
-  if (/^(auto|\*)$/i.test(RAW_PERSONAL_REPOS)) {
-    const me = await github('/user');
-    const login = String(me?.login || '').trim();
-    if (!login) throw new Error('GitHub /user did not return a login for personal repository discovery');
-
-    for (let page = 1; page <= 20; page++) {
-      const rows = await github(`/user/repos?affiliation=owner&visibility=all&sort=full_name&direction=asc&per_page=100&page=${page}`);
-      if (!Array.isArray(rows) || !rows.length) break;
-
-      for (const row of rows) {
-        const fullName = String(row?.full_name || '').trim();
-        const owner = String(row?.owner?.login || '').trim();
-        if (!fullName || owner.toLowerCase() !== login.toLowerCase()) continue;
-        if (!INCLUDE_ARCHIVED && row?.archived === true) continue;
-        repos.push(fullName);
-      }
-
-      if (rows.length < 100) break;
-    }
-  } else {
-    repos = csv(RAW_PERSONAL_REPOS).map(value => {
-      const trimmed = value.replace(/^https:\/\/github\.com\//i, '').replace(/\.git$/i, '');
-      return trimmed;
-    });
-  }
-
-  if (PERSONAL_INCLUDE.length) {
-    const allow = new Set(PERSONAL_INCLUDE.map(v => v.toLowerCase()));
-    repos = repos.filter(full => {
-      const short = full.split('/').pop().toLowerCase();
-      return allow.has(full.toLowerCase()) || allow.has(short);
-    });
-  }
-
-  repos = repos.filter(full => {
-    const short = full.split('/').pop().toLowerCase();
-    return !PERSONAL_EXCLUDE.has(full.toLowerCase()) && !PERSONAL_EXCLUDE.has(short);
-  });
-
-  const seen = new Set();
-  return repos.filter(repo => {
-    const key = repo.toLowerCase();
-    if (!repo.includes('/') || seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  }).map(repo => ({ scope: 'repository', repo }));
-}
-
-async function discoverTargets() {
-  const [orgTargets, personalTargets] = await Promise.all([
-    discoverOrgs(),
-    discoverPersonalRepos(),
-  ]);
-  return [...orgTargets, ...personalTargets];
 }
 
 function runnerName(target) {
@@ -310,6 +156,24 @@ function containerName(target) {
     ? `org-${safe(target.org)}`
     : `repo-${safe(target.repo.replace('/', '-'))}`;
   return `neko-runner-${NODE_ID}-${suffix}`.toLowerCase().slice(0, 120);
+}
+
+async function discoverTargets() {
+  const data = await broker('/internal/runner-broker/targets');
+  return Array.isArray(data.targets) ? data.targets : [];
+}
+
+async function existingRunnerFingerprint(id) {
+  if (!id) return '';
+  try {
+    return (await exec('docker', [
+      'inspect', '-f',
+      '{{ index .Config.Labels "neko.runner.capability-fingerprint" }}',
+      id,
+    ], 15000)).trim();
+  } catch {
+    return '';
+  }
 }
 
 async function findContainer(target) {
@@ -338,32 +202,58 @@ async function ensureVolume(name) {
   }
 }
 
+async function syncLabels(target, name, labels) {
+  await broker('/internal/runner-broker/labels', {
+    method: 'PUT',
+    body: { target, runner_name: name, labels },
+  });
+}
+
+async function removeRemoteRunner(target, name) {
+  await broker('/internal/runner-broker/remove', {
+    method: 'POST',
+    body: { target, runner_name: name },
+  }).catch(err => console.warn(`[fleet] remote remove ${targetKey(target)}: ${err.message}`));
+}
+
 async function ensureRunner(target, capabilities) {
   let id = await findContainer(target);
+  const name = runnerName(target);
+
   if (id) {
     const fingerprint = await existingRunnerFingerprint(id);
     if (fingerprint !== capabilities.fingerprint) {
       console.log(`[fleet] recreating ${targetKey(target)}: capacity labels changed (${fingerprint || 'legacy'} -> ${capabilities.fingerprint})`);
       await exec('docker', ['rm', '-f', id], 60000);
+      await removeRemoteRunner(target, name);
       id = '';
-    } else {
-      if (!(await isRunning(id))) {
-        console.log(`[fleet] starting ${targetKey(target)} runner ${id}`);
-        await exec('docker', ['start', id], 60000);
-      }
-      await syncGitHubRunnerLabels(target, runnerName(target), capabilities.labels);
+    } else if (await isRunning(id)) {
+      await syncLabels(target, name, capabilities.labels);
       return;
+    } else {
+      console.log(`[fleet] recreating stopped broker-managed runner ${targetKey(target)} with a fresh registration token`);
+      await exec('docker', ['rm', '-f', id], 60000);
+      await removeRemoteRunner(target, name);
+      id = '';
     }
   }
 
-  const name = runnerName(target);
+  const prepared = await broker('/internal/runner-broker/prepare', {
+    method: 'POST',
+    body: { target, runner_name: name },
+  });
+
+  if (!prepared.registration_token || !prepared.config_url) {
+    throw new Error(`dashboard did not return a registration token for ${targetKey(target)}`);
+  }
+
   const cname = containerName(target);
-  console.log(`[fleet] creating runner for ${targetKey(target)}: ${name}`);
+  console.log(`[fleet] creating broker-managed runner for ${targetKey(target)}: ${name}`);
 
   const args = [
     'run', '-d',
     '--name', cname,
-    '--restart', 'unless-stopped',
+    '--restart', 'no',
     '--label', 'neko.runner.managed=true',
     '--label', `neko.runner.node=${NODE_ID}`,
     '--label', `neko.runner.target=${targetKey(target)}`,
@@ -372,8 +262,10 @@ async function ensureRunner(target, capabilities) {
     '--label', `neko.runner.capacity=${capabilities.size}`,
     '--label', `neko.runner.gpu=${capabilities.gpu ? 'true' : 'false'}`,
     '--label', `neko.runner.capability-fingerprint=${capabilities.fingerprint}`,
+    '-e', 'RUNNER_AUTH_MODE=broker',
+    '-e', `RUNNER_REGISTRATION_TOKEN=${prepared.registration_token}`,
+    '-e', `RUNNER_CONFIG_URL=${prepared.config_url}`,
     '-e', `RUNNER_SCOPE=${target.scope}`,
-    '-e', `ACCESS_TOKEN=${ACCESS_TOKEN}`,
     '-e', `RUNNER_NAME=${name}`,
     '-e', `LABELS=${capabilities.labels.join(',')}`,
     '-e', `RUNNER_UPDATE_ON_START=${UPDATE_ON_START}`,
@@ -388,32 +280,42 @@ async function ensureRunner(target, capabilities) {
     '-v', `${LOCK_VOLUME}:/runner-lock`,
   ];
 
-  if (target.scope === 'organization') {
-    args.push('-e', `GITHUB_ORG=${target.org}`);
-  } else {
-    args.push('-e', `REPO_URL=https://github.com/${target.repo}`);
-  }
+  if (target.scope === 'organization') args.push('-e', `GITHUB_ORG=${target.org}`);
+  else args.push('-e', `REPO_URL=https://github.com/${target.repo}`);
 
   args.push(RUNNER_IMAGE);
   await exec('docker', args, 120000);
-  await syncGitHubRunnerLabels(target, name, capabilities.labels);
+
+  for (let attempt = 0; attempt < 10; attempt++) {
+    try {
+      await syncLabels(target, name, capabilities.labels);
+      break;
+    } catch (err) {
+      if (attempt === 9) throw err;
+      await new Promise(resolve => setTimeout(resolve, 1500));
+    }
+  }
 }
 
-async function removeUnknownRunners(desired) {
+async function removeUnknownRunners(desired, targetByKey) {
   const out = await exec('docker', [
     'ps', '-a',
-    '--format', '{{.ID}} {{.Label "neko.runner.target"}}',
+    '--format', '{{.ID}} {{.Label "neko.runner.target"}} {{.Label "neko.runner.name"}}',
     '--filter', `label=neko.runner.node=${NODE_ID}`,
   ], 15000);
 
   for (const line of out.split('\n').filter(Boolean)) {
-    const firstSpace = line.indexOf(' ');
-    const id = firstSpace < 0 ? line : line.slice(0, firstSpace);
-    const target = firstSpace < 0 ? '' : line.slice(firstSpace + 1).trim().toLowerCase();
-    if (!target || desired.has(target)) continue;
-    console.log(`[fleet] removing runner for no-longer-managed target ${target}`);
-    await exec('docker', ['rm', '-f', id], 60000)
-      .catch(err => console.error(`[fleet] remove ${target}: ${err.output || err.message}`));
+    const parts = line.split(' ');
+    const id = parts.shift();
+    const key = String(parts.shift() || '').trim().toLowerCase();
+    const name = String(parts.join(' ') || '').trim();
+    if (!key || desired.has(key)) continue;
+
+    console.log(`[fleet] removing no-longer-managed runner ${key}`);
+    await exec('docker', ['rm', '-f', id], 60000).catch(() => {});
+
+    const target = targetByKey.get(key) || targetFromKey(key);
+    if (target && name) await removeRemoteRunner(target, name);
   }
 }
 
@@ -422,9 +324,7 @@ async function reconcile() {
   try {
     const capabilities = await detectCapabilities();
     const targets = await discoverTargets();
-    if (!targets.length) {
-      throw new Error('No GitHub targets resolved. Configure GITHUB_ORGS and/or GITHUB_PERSONAL_REPOS.');
-    }
+    if (!targets.length) throw new Error('Dashboard returned no GitHub runner targets');
 
     await Promise.all([
       ensureVolume(WORK_VOLUME),
@@ -433,7 +333,8 @@ async function reconcile() {
     ]);
 
     const desired = new Set(targets.map(targetKey));
-    await removeUnknownRunners(desired);
+    const targetByKey = new Map(targets.map(t => [targetKey(t), t]));
+    await removeUnknownRunners(desired, targetByKey);
 
     for (const target of targets) {
       try {
@@ -445,7 +346,7 @@ async function reconcile() {
 
     const orgCount = targets.filter(v => v.scope === 'organization').length;
     const repoCount = targets.filter(v => v.scope === 'repository').length;
-    console.log(`[fleet] reconciled ${targets.length} target(s): ${orgCount} org(s), ${repoCount} personal repo(s); node=${capabilities.size} cpu=${capabilities.cpu} ram=${capabilities.ram_gb}GB gpu=${capabilities.gpu}; labels=${capabilities.labels.join(',')}; shared concurrency=1`);
+    console.log(`[fleet] reconciled ${targets.length} target(s): ${orgCount} org(s), ${repoCount} personal repo(s); node=${capabilities.size} cpu=${capabilities.cpu} ram=${capabilities.ram_gb}GB gpu=${capabilities.gpu}; shared concurrency=1`);
   } catch (err) {
     console.error(`[fleet] reconcile failed: ${err.output || err.message}`);
   } finally {
@@ -457,6 +358,10 @@ function startAgent() {
   if (child || stopping) return;
   const env = {
     ...process.env,
+    ACCESS_TOKEN: '',
+    GITHUB_APP_ID: '',
+    GITHUB_APP_PRIVATE_KEY: '',
+    GITHUB_APP_PRIVATE_KEY_BASE64: '',
     RUNNER_NAME: process.env.RUNNER_NAME || PREFIX,
     GITHUB_ORG: '',
     REPO_URL: '',
@@ -474,10 +379,24 @@ function startAgent() {
 
 async function stopFleet() {
   try {
-    const out = await exec('docker', ['ps', '-q', '--filter', `label=neko.runner.node=${NODE_ID}`], 15000);
-    const ids = out.trim().split('\n').filter(Boolean);
-    for (const id of ids) {
+    const out = await exec('docker', [
+      'ps', '-a',
+      '--format', '{{.ID}} {{.Label "neko.runner.target"}} {{.Label "neko.runner.name"}}',
+      '--filter', `label=neko.runner.node=${NODE_ID}`,
+    ], 15000);
+
+    for (const line of out.split('\n').filter(Boolean)) {
+      const parts = line.split(' ');
+      const id = parts.shift();
+      const key = String(parts.shift() || '');
+      const name = String(parts.join(' ') || '');
       await exec('docker', ['stop', '-t', '30', id], 60000).catch(() => {});
+
+      try {
+        const targets = await discoverTargets();
+        const target = targets.find(t => targetKey(t) === key);
+        if (target && name) await removeRemoteRunner(target, name);
+      } catch {}
     }
   } catch {}
 }
@@ -491,14 +410,16 @@ function stop(signal) {
   stopFleet().finally(() => setTimeout(() => process.exit(0), 100).unref());
 }
 
-if (!ACCESS_TOKEN) {
-  console.error('ERROR: ACCESS_TOKEN is required for GitHub runner fleet mode');
+if (!/^https?:\/\//i.test(DASHBOARD_URL)) {
+  console.error('ERROR: DASHBOARD_URL must be configured for broker-managed fleet mode');
+  process.exit(1);
+}
+if (NODE_TOKEN.length < 32) {
+  console.error('ERROR: DASHBOARD_NODE_SHARED_SECRET must be at least 32 characters');
   process.exit(1);
 }
 
-console.log(
-  `[fleet] mode enabled for node ${NODE_ID}; orgs=${RAW_ORGS || 'off'}; personal-repos=${RAW_PERSONAL_REPOS || 'off'}; one shared job slot`,
-);
+console.log(`[fleet] dashboard-broker mode enabled for node ${NODE_ID}; no GitHub long-lived credentials are stored on this node`);
 
 detectCapabilities()
   .then(capabilities => {
@@ -511,6 +432,7 @@ detectCapabilities()
     console.error(`[fleet] capability detection failed: ${err.output || err.message}`);
     process.exit(1);
   });
+
 process.once('SIGTERM', () => stop('SIGTERM'));
 process.once('SIGINT', () => stop('SIGINT'));
 process.once('SIGHUP', () => stop('SIGHUP'));

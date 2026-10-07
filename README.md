@@ -141,6 +141,55 @@ Typical runner labels:
 LABELS=docker,buildx,multiarch,builder
 ```
 
+## Dashboard control plane and credential broker
+
+The recommended architecture keeps all long-lived GitHub credentials on the central dashboard.
+
+```text
+GitHub App private key / PAT
+          │
+          ▼
+  Central Dashboard
+  - discovers allowed orgs/repos
+  - mints App installation tokens
+  - talks to GitHub runner APIs
+  - removes stale registrations
+  - synchronizes labels
+  - creates runner registration tokens
+          │
+          │ HTTPS + DASHBOARD_NODE_SHARED_SECRET
+          ▼
+      Worker nodes
+  - no GitHub App private key
+  - no PAT
+  - no installation token
+  - receive only short-lived runner registration tokens
+  - execute workflow jobs
+```
+
+Remote nodes therefore need only the dashboard URL, a node authentication secret, and their local capacity settings. GitHub organization/repository selection is centralized on the dashboard.
+
+## GitHub authentication modes
+
+The fleet supports two authentication modes:
+
+```env
+GITHUB_AUTH_MODE=token
+ACCESS_TOKEN=github_pat_...
+```
+
+or the recommended multi-account GitHub App mode:
+
+```env
+GITHUB_AUTH_MODE=app
+GITHUB_APP_ID=123456
+GITHUB_APP_PRIVATE_KEY_BASE64=...
+```
+
+In App mode the dashboard signs GitHub App JWTs, discovers installations, mints/caches installation access tokens, and performs GitHub runner-management API calls. Worker nodes receive only short-lived runner registration tokens. The App private key, PATs, and installation tokens never leave the dashboard.
+
+See [GITHUB-APP.md](GITHUB-APP.md) for App creation, permissions, installation and configuration.
+
 ## Multi-organization physical nodes
 
 Remote nodes can now serve multiple GitHub organizations without deploying one node stack per organization.
@@ -152,7 +201,7 @@ RUNNER_NAME_PREFIX=uk-vps-02
 
 `GITHUB_ORGS=auto` discovers active organizations where the authenticated GitHub user has the organization admin role. You can also use an explicit comma-separated list.
 
-The node-agent maintains one lightweight runner registration per organization, but all runners on the same physical node share **one execution slot**. If Org A is already running a job and GitHub assigns a job from Org B, Org B waits in the job-start hook until Org A completes. This prevents two organizations from building on the same VPS/Pi at the same time.
+The dashboard tells each node-agent which organization/repository runner registrations to maintain, but all runners on the same physical node share **one execution slot**. If Org A is already running a job and GitHub assigns a job from Org B, Org B waits in the job-start hook until Org A completes. This prevents two organizations from building on the same VPS/Pi at the same time.
 
 Use `GITHUB_ORG_INCLUDE` and `GITHUB_ORG_EXCLUDE` to filter automatic discovery.
 
@@ -220,7 +269,7 @@ That keeps curl/API/check jobs on small VPS nodes and prevents heavy/GPU workflo
 
 ### GitHub runner label synchronization
 
-The node-agent does not rely only on the labels passed during runner registration. On every fleet reconcile it looks up the real GitHub runner ID and replaces the runner's **custom label set** through the GitHub Actions runner API.
+The node-agent does not rely only on the labels passed during runner registration. On every fleet reconcile it asks the dashboard broker to synchronize the real GitHub runner's **custom label set** through the GitHub Actions API.
 
 That means the labels visible in:
 
@@ -489,31 +538,28 @@ docker compose up -d
 Logs:
 
 ```bash
-docker compose logs -f github-builder
 docker compose logs -f dashboard
 docker compose logs -f node-agent
 ```
 
-Verify Docker access from the runner:
+The node-agent dynamically creates the broker-managed runner containers. List them with:
 
 ```bash
-docker compose exec github-builder docker version
+docker ps --filter label=neko.runner.managed=true
 ```
-
-You should see both the Docker Client and Server sections.
 
 ## Updating an existing installation
 
-Because the runner image has changed significantly, rebuild it once after pulling:
+After pulling broker/control-plane changes, recreate the dashboard and node-agent:
 
 ```bash
 git pull
 docker compose down
-docker compose build --no-cache github-builder
+docker compose build --no-cache dashboard node-agent
 docker compose up -d --force-recreate
 ```
 
-After this first lean rebuild, later builds should be substantially quicker than the previous all-in-one toolchain image.
+The node-agent will reconcile and recreate the required runner containers automatically.
 
 ## Security
 

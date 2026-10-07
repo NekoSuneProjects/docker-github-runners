@@ -8,6 +8,19 @@ const { execFile } = require('child_process');
 const PORT = Number(process.env.PORT || 8080);
 const GITHUB_ORG = process.env.GITHUB_ORG || '';
 const GITHUB_TOKEN = process.env.GITHUB_DASHBOARD_TOKEN || process.env.ACCESS_TOKEN || '';
+const GITHUB_AUTH_MODE = String(process.env.GITHUB_AUTH_MODE || 'token').trim().toLowerCase();
+const GITHUB_APP_ID = String(process.env.GITHUB_APP_ID || '').trim();
+const GITHUB_APP_PRIVATE_KEY_RAW = String(process.env.GITHUB_APP_PRIVATE_KEY || '');
+const GITHUB_APP_PRIVATE_KEY_BASE64 = String(process.env.GITHUB_APP_PRIVATE_KEY_BASE64 || '').trim();
+const BROKER_ORGS = String(process.env.GITHUB_ORGS || '').trim();
+const BROKER_ORG_INCLUDE = String(process.env.GITHUB_ORG_INCLUDE || '').split(',').map(v => v.trim()).filter(Boolean);
+const BROKER_ORG_EXCLUDE = new Set(String(process.env.GITHUB_ORG_EXCLUDE || '').split(',').map(v => v.trim().toLowerCase()).filter(Boolean));
+const BROKER_PERSONAL_REPOS = String(process.env.GITHUB_PERSONAL_REPOS || '').trim();
+const BROKER_PERSONAL_INCLUDE = String(process.env.GITHUB_PERSONAL_REPO_INCLUDE || '').split(',').map(v => v.trim()).filter(Boolean);
+const BROKER_PERSONAL_EXCLUDE = new Set(String(process.env.GITHUB_PERSONAL_REPO_EXCLUDE || '').split(',').map(v => v.trim().toLowerCase()).filter(Boolean));
+const BROKER_INCLUDE_ARCHIVED = /^(1|true|yes|on)$/i.test(process.env.GITHUB_PERSONAL_INCLUDE_ARCHIVED || 'false');
+const appInstallationTokenCache = new Map();
+const appInstallationIdCache = new Map();
 const DASHBOARD_REPOS = (process.env.DASHBOARD_REPOS || '').split(',').map(v => v.trim()).filter(Boolean);
 const MAX_REPOS = Math.max(1, Math.min(Number(process.env.DASHBOARD_MAX_REPOS || 12), 50));
 const REFRESH_SECONDS = Math.max(5, Math.min(Number(process.env.DASHBOARD_REFRESH_SECONDS || 10), 120));
@@ -29,7 +42,7 @@ const NODE_MAX_BODY_BYTES = Math.max(65536, Math.min(Number(process.env.DASHBOAR
 const DIAG_DIR = process.env.RUNNER_DIAG_DIR || '/runner-diag';
 const CONSOLE_DIR = process.env.RUNNER_CONSOLE_DIR || '/runner-console';
 const PUBLIC_DIR = path.join(__dirname, 'public');
-const API_VERSION = '2022-11-28';
+const API_VERSION = '2026-03-10';
 const SESSION_COOKIE = 'neko_runner_session';
 
 const cache = new Map();
@@ -54,6 +67,25 @@ if (authConfigured && SESSION_SECRET.length < 32) {
 
 if (NODE_SHARED_SECRET && NODE_SHARED_SECRET.length < 32) {
   console.error('ERROR: DASHBOARD_NODE_SHARED_SECRET must be at least 32 characters when remote nodes are enabled.');
+  process.exit(1);
+}
+
+if (!['token','app'].includes(GITHUB_AUTH_MODE)) {
+  console.error(`ERROR: unsupported GITHUB_AUTH_MODE=${GITHUB_AUTH_MODE}; use token or app`);
+  process.exit(1);
+}
+if (GITHUB_AUTH_MODE === 'app' && (BROKER_ORGS || BROKER_PERSONAL_REPOS)) {
+  if (!GITHUB_APP_ID || !appPrivateKey()) {
+    console.error('ERROR: GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY_BASE64 (or GITHUB_APP_PRIVATE_KEY) are required for dashboard App broker mode.');
+    process.exit(1);
+  }
+  try { createAppJwt(); } catch (err) {
+    console.error(`ERROR: GitHub App private key/JWT validation failed: ${err.message}`);
+    process.exit(1);
+  }
+}
+if (GITHUB_AUTH_MODE === 'token' && (BROKER_ORGS || BROKER_PERSONAL_REPOS) && !GITHUB_TOKEN) {
+  console.error('ERROR: ACCESS_TOKEN or GITHUB_DASHBOARD_TOKEN is required for dashboard token broker mode.');
   process.exit(1);
 }
 
@@ -161,6 +193,247 @@ function recordLoginFailure(req) {
 }
 function clearLoginFailures(req) { loginAttempts.delete(clientIp(req)); }
 
+function appPrivateKey() {
+  if (GITHUB_APP_PRIVATE_KEY_BASE64) return Buffer.from(GITHUB_APP_PRIVATE_KEY_BASE64, 'base64').toString('utf8');
+  return GITHUB_APP_PRIVATE_KEY_RAW.replace(/\\n/g, '\n').trim();
+}
+
+function createAppJwt() {
+  const key = appPrivateKey();
+  if (!GITHUB_APP_ID || !key) throw Object.assign(new Error('GitHub App credentials are not configured on the dashboard'), { status:503 });
+  const now = Math.floor(Date.now() / 1000);
+  const header = Buffer.from(JSON.stringify({ alg:'RS256', typ:'JWT' })).toString('base64url');
+  const payload = Buffer.from(JSON.stringify({ iat:now - 60, exp:now + 540, iss:GITHUB_APP_ID })).toString('base64url');
+  const input = `${header}.${payload}`;
+  const signature = crypto.sign('RSA-SHA256', Buffer.from(input), key).toString('base64url');
+  return `${input}.${signature}`;
+}
+
+async function githubBrokerFetch(apiPath, options = {}) {
+  const token = options.token || (GITHUB_AUTH_MODE === 'app' ? createAppJwt() : GITHUB_TOKEN);
+  if (!token) throw Object.assign(new Error('GitHub credential broker is not configured'), { status:503 });
+  const response = await fetch(`https://api.github.com${apiPath}`, {
+    method: options.method || 'GET',
+    headers: {
+      Authorization:`Bearer ${token}`,
+      Accept:'application/vnd.github+json',
+      'X-GitHub-Api-Version':API_VERSION,
+      'User-Agent':'neko-runner-dashboard-broker/1.0',
+      ...(options.body ? {'content-type':'application/json'} : {}),
+    },
+    body: options.body ? JSON.stringify(options.body) : undefined,
+  });
+  if (!response.ok) {
+    const body = await response.text().catch(()=>'');
+    throw Object.assign(new Error(`GitHub API ${response.status}: ${body.slice(0,300) || response.statusText}`), { status:response.status });
+  }
+  if (response.status === 204) return {};
+  return response.json();
+}
+
+async function listAppInstallations() {
+  const out = [];
+  for (let page=1; page<=20; page++) {
+    const rows = await githubBrokerFetch(`/app/installations?per_page=100&page=${page}`);
+    if (!Array.isArray(rows) || !rows.length) break;
+    out.push(...rows);
+    if (rows.length < 100) break;
+  }
+  return out;
+}
+
+async function installationIdForTarget(target) {
+  const key = target.scope === 'organization' ? `org:${target.org.toLowerCase()}` : `repo:${target.repo.toLowerCase()}`;
+  if (appInstallationIdCache.has(key)) return appInstallationIdCache.get(key);
+  let data;
+  if (target.scope === 'organization') data = await githubBrokerFetch(`/orgs/${encodeURIComponent(target.org)}/installation`);
+  else {
+    const [owner, repo] = target.repo.split('/');
+    data = await githubBrokerFetch(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/installation`);
+  }
+  if (!data?.id) throw Object.assign(new Error(`No GitHub App installation for ${key}`), { status:404 });
+  appInstallationIdCache.set(key, data.id);
+  return data.id;
+}
+
+async function installationTokenById(installationId) {
+  const cached = appInstallationTokenCache.get(String(installationId));
+  if (cached && cached.expiresAt - Date.now() > 5*60*1000) return cached.token;
+  const data = await githubBrokerFetch(`/app/installations/${installationId}/access_tokens`, { method:'POST' });
+  if (!data?.token) throw new Error('GitHub did not return an installation token');
+  const expiresAt = Date.parse(data.expires_at || '') || Date.now()+55*60*1000;
+  appInstallationTokenCache.set(String(installationId), { token:data.token, expiresAt });
+  return data.token;
+}
+
+async function installationTokenForTarget(target) {
+  if (GITHUB_AUTH_MODE !== 'app') return GITHUB_TOKEN;
+  const installationId = await installationIdForTarget(target);
+  return installationTokenById(installationId);
+}
+
+function targetApiBase(target) {
+  if (target.scope === 'organization') return `/orgs/${encodeURIComponent(target.org)}`;
+  const [owner, repo] = target.repo.split('/');
+  return `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
+}
+
+function normalizeBrokerTarget(raw) {
+  if (!raw || typeof raw !== 'object') throw Object.assign(new Error('target is required'), { status:400 });
+  if (raw.scope === 'organization' && /^[A-Za-z0-9_.-]+$/.test(String(raw.org||''))) return { scope:'organization', org:String(raw.org) };
+  if (raw.scope === 'repository' && /^[^/\s]+\/[^/\s]+$/.test(String(raw.repo||''))) return { scope:'repository', repo:String(raw.repo) };
+  throw Object.assign(new Error('invalid target'), { status:400 });
+}
+
+async function discoverBrokerTargets() {
+  const targets = [];
+  if (BROKER_ORGS && !/^(none|off|false)$/i.test(BROKER_ORGS)) {
+    let orgs = [];
+    if (/^(auto|\*)$/i.test(BROKER_ORGS)) {
+      if (GITHUB_AUTH_MODE === 'app') {
+        for (const installation of await listAppInstallations()) {
+          if (installation?.account?.type === 'Organization' && installation?.account?.login) {
+            orgs.push(installation.account.login);
+            appInstallationIdCache.set(`org:${installation.account.login.toLowerCase()}`, installation.id);
+          }
+        }
+      } else {
+        for (let page=1; page<=10; page++) {
+          const rows = await githubBrokerFetch(`/user/memberships/orgs?state=active&per_page=100&page=${page}`);
+          if (!Array.isArray(rows) || !rows.length) break;
+          for (const row of rows) if (row?.role === 'admin' && row?.organization?.login) orgs.push(row.organization.login);
+          if (rows.length < 100) break;
+        }
+      }
+    } else orgs = BROKER_ORGS.split(',').map(v=>v.trim()).filter(Boolean);
+    if (BROKER_ORG_INCLUDE.length) {
+      const allow = new Set(BROKER_ORG_INCLUDE.map(v=>v.toLowerCase()));
+      orgs = orgs.filter(v=>allow.has(v.toLowerCase()));
+    }
+    orgs = [...new Set(orgs.filter(v=>!BROKER_ORG_EXCLUDE.has(v.toLowerCase())))];
+    for (const org of orgs) targets.push({ scope:'organization', org });
+  }
+
+  if (BROKER_PERSONAL_REPOS && !/^(none|off|false)$/i.test(BROKER_PERSONAL_REPOS)) {
+    let repos = [];
+    if (/^(auto|\*)$/i.test(BROKER_PERSONAL_REPOS)) {
+      if (GITHUB_AUTH_MODE === 'app') {
+        for (const installation of await listAppInstallations()) {
+          if (installation?.account?.type !== 'User' || !installation?.id) continue;
+          const token = await installationTokenById(installation.id);
+          for (let page=1; page<=20; page++) {
+            const data = await githubBrokerFetch(`/installation/repositories?per_page=100&page=${page}`, { token });
+            const rows = Array.isArray(data?.repositories) ? data.repositories : [];
+            if (!rows.length) break;
+            for (const row of rows) {
+              const fullName = String(row?.full_name||'').trim();
+              if (!fullName || (!BROKER_INCLUDE_ARCHIVED && row?.archived)) continue;
+              repos.push(fullName);
+              appInstallationIdCache.set(`repo:${fullName.toLowerCase()}`, installation.id);
+            }
+            if (rows.length < 100) break;
+          }
+        }
+      } else {
+        for (let page=1; page<=20; page++) {
+          const rows = await githubBrokerFetch(`/user/repos?affiliation=owner&visibility=all&sort=full_name&direction=asc&per_page=100&page=${page}`);
+          if (!Array.isArray(rows) || !rows.length) break;
+          for (const row of rows) {
+            const fullName=String(row?.full_name||'').trim();
+            if (!fullName || (!BROKER_INCLUDE_ARCHIVED && row?.archived)) continue;
+            repos.push(fullName);
+          }
+          if (rows.length < 100) break;
+        }
+      }
+    } else repos = BROKER_PERSONAL_REPOS.split(',').map(v=>v.trim()).filter(Boolean);
+    if (BROKER_PERSONAL_INCLUDE.length) {
+      const allow = new Set(BROKER_PERSONAL_INCLUDE.map(v=>v.toLowerCase()));
+      repos = repos.filter(full=>allow.has(full.toLowerCase()) || allow.has(full.split('/').pop().toLowerCase()));
+    }
+    repos = [...new Set(repos.filter(full=>!BROKER_PERSONAL_EXCLUDE.has(full.toLowerCase()) && !BROKER_PERSONAL_EXCLUDE.has(full.split('/').pop().toLowerCase())))];
+    for (const repo of repos) targets.push({ scope:'repository', repo });
+  }
+  return targets;
+}
+
+function brokerTargetAllowed(target, targets) {
+  return targets.some(t => t.scope === target.scope && (t.org === target.org || t.repo === target.repo));
+}
+
+async function readJsonBody(req) {
+  const raw = await readBody(req, 65536);
+  try { return JSON.parse(raw || '{}'); } catch { throw Object.assign(new Error('Invalid JSON body'), {status:400}); }
+}
+
+async function brokerTargets(req,res) {
+  if (!nodeAuthorized(req)) return json(res,401,{error:'Invalid node token'});
+  const targets = await discoverBrokerTargets();
+  return json(res,200,{auth_mode:GITHUB_AUTH_MODE,targets});
+}
+
+async function brokerPrepare(req,res) {
+  if (!nodeAuthorized(req)) return json(res,401,{error:'Invalid node token'});
+  const body = await readJsonBody(req);
+  const target = normalizeBrokerTarget(body.target);
+  const runnerName = safeShortString(body.runner_name||'',120);
+  if (!runnerName) return json(res,400,{error:'runner_name is required'});
+  const targets = await discoverBrokerTargets();
+  if (!brokerTargetAllowed(target,targets)) return json(res,403,{error:'Target is not allowed by dashboard configuration'});
+  const token = await installationTokenForTarget(target);
+  const base = targetApiBase(target);
+
+  const existing = await githubBrokerFetch(`${base}/actions/runners?per_page=100`, {token});
+  const stale = (existing.runners||[]).find(r=>r.name===runnerName);
+  if (stale) await githubBrokerFetch(`${base}/actions/runners/${stale.id}`, {method:'DELETE',token});
+
+  const registration = await githubBrokerFetch(`${base}/actions/runners/registration-token`, {method:'POST',token});
+  return json(res,200,{
+    target,
+    config_url: target.scope === 'organization' ? `https://github.com/${target.org}` : `https://github.com/${target.repo}`,
+    registration_token: registration.token,
+    expires_at: registration.expires_at || null,
+  });
+}
+
+async function brokerRunnerStatus(req,res) {
+  if (!nodeAuthorized(req)) return json(res,401,{error:'Invalid node token'});
+  const body=await readJsonBody(req), target=normalizeBrokerTarget(body.target), runnerName=safeShortString(body.runner_name||'',120);
+  const targets=await discoverBrokerTargets();
+  if (!brokerTargetAllowed(target,targets)) return json(res,403,{error:'Target is not allowed'});
+  const token=await installationTokenForTarget(target), base=targetApiBase(target);
+  const data=await githubBrokerFetch(`${base}/actions/runners?per_page=100`,{token});
+  const runner=(data.runners||[]).find(r=>r.name===runnerName);
+  return json(res,200,{found:Boolean(runner),runner:runner?{id:runner.id,name:runner.name,status:runner.status,busy:Boolean(runner.busy),labels:(runner.labels||[]).map(v=>v.name)}:null});
+}
+
+async function brokerSyncLabels(req,res) {
+  if (!nodeAuthorized(req)) return json(res,401,{error:'Invalid node token'});
+  const body=await readJsonBody(req), target=normalizeBrokerTarget(body.target), runnerName=safeShortString(body.runner_name||'',120);
+  const labels=Array.isArray(body.labels)?[...new Set(body.labels.map(v=>safeShortString(v,50)).filter(Boolean))].slice(0,100):[];
+  const targets=await discoverBrokerTargets();
+  if (!brokerTargetAllowed(target,targets)) return json(res,403,{error:'Target is not allowed'});
+  const token=await installationTokenForTarget(target), base=targetApiBase(target);
+  const data=await githubBrokerFetch(`${base}/actions/runners?per_page=100`,{token});
+  const runner=(data.runners||[]).find(r=>r.name===runnerName);
+  if (!runner) return json(res,404,{error:'Runner not found'});
+  const result=await githubBrokerFetch(`${base}/actions/runners/${runner.id}/labels`,{method:'PUT',token,body:{labels}});
+  return json(res,200,{ok:true,labels:(result.labels||[]).map(v=>v.name)});
+}
+
+async function brokerRemoveRunner(req,res) {
+  if (!nodeAuthorized(req)) return json(res,401,{error:'Invalid node token'});
+  const body=await readJsonBody(req), target=normalizeBrokerTarget(body.target), runnerName=safeShortString(body.runner_name||'',120);
+  const targets=await discoverBrokerTargets();
+  if (!brokerTargetAllowed(target,targets)) return json(res,403,{error:'Target is not allowed'});
+  const token=await installationTokenForTarget(target), base=targetApiBase(target);
+  const data=await githubBrokerFetch(`${base}/actions/runners?per_page=100`,{token});
+  const runner=(data.runners||[]).find(r=>r.name===runnerName);
+  if (runner) await githubBrokerFetch(`${base}/actions/runners/${runner.id}`,{method:'DELETE',token});
+  return json(res,200,{ok:true,removed:Boolean(runner)});
+}
+
+
 function readBody(req, maxBytes = 65536) {
   return new Promise((resolve, reject) => {
     let size = 0; const chunks = [];
@@ -182,7 +455,11 @@ async function cached(key, ttlMs, fn) {
 
 async function githubFetch(apiPath, options = {}) {
   const headers = { Accept: options.accept || 'application/vnd.github+json', 'X-GitHub-Api-Version': API_VERSION, 'User-Agent': 'neko-runner-dashboard/2.0' };
-  if (GITHUB_TOKEN) headers.Authorization = `Bearer ${GITHUB_TOKEN}`;
+  let token = GITHUB_TOKEN;
+  if (!token && GITHUB_AUTH_MODE === 'app' && GITHUB_ORG) {
+    token = await installationTokenForTarget({ scope:'organization', org:GITHUB_ORG });
+  }
+  if (token) headers.Authorization = `Bearer ${token}`;
   const response = await fetch(`https://api.github.com${apiPath}`, { method: options.method || 'GET', headers, redirect: 'follow' });
   if (!response.ok) {
     const body = await response.text().catch(() => '');
@@ -347,6 +624,11 @@ const server = http.createServer(async (req, res) => {
   try {
     if (url.pathname === '/healthz') return json(res, 200, { ok: true });
     if (url.pathname === '/internal/nodes/heartbeat' && req.method === 'POST') return await receiveNodeHeartbeat(req, res);
+    if (url.pathname === '/internal/runner-broker/targets' && req.method === 'GET') return await brokerTargets(req,res);
+    if (url.pathname === '/internal/runner-broker/prepare' && req.method === 'POST') return await brokerPrepare(req,res);
+    if (url.pathname === '/internal/runner-broker/status' && req.method === 'POST') return await brokerRunnerStatus(req,res);
+    if (url.pathname === '/internal/runner-broker/labels' && req.method === 'PUT') return await brokerSyncLabels(req,res);
+    if (url.pathname === '/internal/runner-broker/remove' && req.method === 'POST') return await brokerRemoveRunner(req,res);
 
     if (url.pathname === '/login' && req.method === 'GET') { if (readSession(req)) return redirect(res, '/'); return serveLogin(res, ''); }
     if (url.pathname === '/login' && req.method === 'POST') {
@@ -362,7 +644,7 @@ const server = http.createServer(async (req, res) => {
     if (!session) { if (url.pathname.startsWith('/api/')) return json(res, 401, { error: 'Authentication required' }); return redirect(res, '/login'); }
 
     if (url.pathname === '/api/session') return json(res, 200, { authenticated: true, username: session.u, expires_at: Number.isFinite(session.exp) ? new Date(session.exp * 1000).toISOString() : null });
-    if (url.pathname === '/api/health') return json(res, 200, { ok: true, org: GITHUB_ORG, token_configured: Boolean(GITHUB_TOKEN), refresh_seconds: REFRESH_SECONDS, remote_nodes_enabled: Boolean(NODE_SHARED_SECRET), connected_nodes: nodes.size });
+    if (url.pathname === '/api/health') return json(res, 200, { ok: true, org: GITHUB_ORG, github_auth_mode: GITHUB_AUTH_MODE, credential_broker_configured: GITHUB_AUTH_MODE === 'app' ? Boolean(GITHUB_APP_ID && appPrivateKey()) : Boolean(GITHUB_TOKEN), token_configured: Boolean(GITHUB_TOKEN), refresh_seconds: REFRESH_SECONDS, remote_nodes_enabled: Boolean(NODE_SHARED_SECRET), connected_nodes: nodes.size });
     if (url.pathname === '/api/overview') return json(res, 200, await getOverview());
     if (url.pathname === '/api/nodes') return json(res, 200, getNodesSummary());
     if (url.pathname === '/api/node') { const id = sanitizeNodeId(url.searchParams.get('id')), node = nodes.get(id); if (!node) return json(res, 404, { error: 'Node not found' }); return json(res, 200, { node: publicNode(node), log_tail: node.log_tail || '' }); }
@@ -388,8 +670,9 @@ async function start() {
     console.log(`Authentication: ${authConfigured ? 'enabled' : 'disabled by explicit configuration'}`);
     console.log(`Session lifetime: ${SESSION_TTL_HOURS} hour(s)`);
     console.log(`Remote node aggregation: ${NODE_SHARED_SECRET ? `enabled (${nodes.size} cached node(s))` : 'disabled'}`);
+    console.log(`GitHub credential broker: ${GITHUB_AUTH_MODE} mode; targets orgs=${BROKER_ORGS || 'off'} personal=${BROKER_PERSONAL_REPOS || 'off'}`);
     if (COOKIE_SECURE) console.log('Secure session cookies: enabled');
-    if (!GITHUB_TOKEN) console.warn('WARNING: No GitHub token configured. API rate limits and private data access will be limited.');
+    if (!GITHUB_TOKEN && GITHUB_AUTH_MODE !== 'app') console.warn('WARNING: No GitHub token configured. API rate limits and private data access will be limited.');
   });
 }
 

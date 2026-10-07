@@ -59,30 +59,15 @@ On another AMD64 or ARM64 Linux machine, clone this repository and create its en
 cp .env.node.example .env
 ```
 
-Set:
+Remote nodes are intentionally credential-free. GitHub App/PAT credentials and org/repository selection are configured only on the central dashboard.
+
+Remote node configuration:
 
 ```env
-ACCESS_TOKEN=github_pat_...
-
-# Discover every active org where this account is an org admin.
-GITHUB_ORGS=auto
-
-# Or set an explicit list:
-# GITHUB_ORGS=NekoSuneProjects,NekoSuneProjectsForks,AnotherOrg
-
-GITHUB_ORG_INCLUDE=
-GITHUB_ORG_EXCLUDE=
-
-# Also discover repositories owned by your personal GitHub account.
-GITHUB_PERSONAL_REPOS=auto
-GITHUB_PERSONAL_REPO_INCLUDE=
-GITHUB_PERSONAL_REPO_EXCLUDE=
-GITHUB_PERSONAL_INCLUDE_ARCHIVED=false
-
-RUNNER_NAME_PREFIX=uk-vps-02
-
 CENTRAL_DASHBOARD_URL=https://runner-dashboard.example.com
 DASHBOARD_NODE_SHARED_SECRET=THE_SAME_SECRET_AS_THE_CENTRAL_DASHBOARD
+
+RUNNER_NAME_PREFIX=uk-vps-02
 
 NODE_ID=uk-vps-02
 NODE_NAME=UK Builder 02

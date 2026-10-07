@@ -62,6 +62,9 @@ API_VERSION="2022-11-28"
 RUNNER_SCOPE="${RUNNER_SCOPE:-organization}"
 RUNNER_NAME="${RUNNER_NAME:-builder-$(hostname)}"
 RUNNER_UPDATE_ON_START="${RUNNER_UPDATE_ON_START:-true}"
+RUNNER_AUTH_MODE="${RUNNER_AUTH_MODE:-api}"
+RUNNER_REGISTRATION_TOKEN="${RUNNER_REGISTRATION_TOKEN:-}"
+RUNNER_CONFIG_URL="${RUNNER_CONFIG_URL:-}"
 
 case "$(uname -m)" in
     x86_64|amd64)
@@ -81,9 +84,16 @@ esac
 DEFAULT_LABELS="docker,buildx,multiarch,builder,${HOST_ARCH}"
 LABELS="${LABELS:-$DEFAULT_LABELS}"
 
-if [[ -z "${ACCESS_TOKEN:-}" ]]; then
-    echo "ERROR: ACCESS_TOKEN is required"
+if [[ "${RUNNER_AUTH_MODE}" != "broker" && -z "${ACCESS_TOKEN:-}" ]]; then
+    echo "ERROR: ACCESS_TOKEN is required unless RUNNER_AUTH_MODE=broker"
     exit 1
+fi
+
+if [[ "${RUNNER_AUTH_MODE}" == "broker" ]]; then
+    if [[ -z "${RUNNER_REGISTRATION_TOKEN}" || -z "${RUNNER_CONFIG_URL}" ]]; then
+        echo "ERROR: RUNNER_REGISTRATION_TOKEN and RUNNER_CONFIG_URL are required in broker mode"
+        exit 1
+    fi
 fi
 
 verify_docker_socket() {
@@ -140,11 +150,18 @@ get_installed_runner_version() {
 }
 
 get_latest_runner_release() {
-    curl -fsSL \
-        -H "Authorization: Bearer ${ACCESS_TOKEN}" \
-        -H "Accept: application/vnd.github+json" \
-        -H "X-GitHub-Api-Version: ${API_VERSION}" \
-        "https://api.github.com/repos/actions/runner/releases/latest"
+    if [[ -n "${ACCESS_TOKEN:-}" ]]; then
+        curl -fsSL \
+            -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: ${API_VERSION}" \
+            "https://api.github.com/repos/actions/runner/releases/latest"
+    else
+        curl -fsSL \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: ${API_VERSION}" \
+            "https://api.github.com/repos/actions/runner/releases/latest"
+    fi
 }
 
 update_github_runner() {
@@ -320,6 +337,12 @@ update_github_runner() {
 }
 
 configure_scope() {
+    if [[ "${RUNNER_AUTH_MODE}" == "broker" ]]; then
+        CONFIG_URL="${RUNNER_CONFIG_URL}"
+        API_SCOPE=""
+        return 0
+    fi
+
     case "$RUNNER_SCOPE" in
         organization|org)
             if [[ -z "${GITHUB_ORG:-}" ]]; then
@@ -354,6 +377,11 @@ configure_scope() {
 get_registration_token() {
     echo "Getting GitHub runner registration token..."
 
+    if [[ "${RUNNER_AUTH_MODE}" == "broker" ]]; then
+        RUNNER_TOKEN="${RUNNER_REGISTRATION_TOKEN}"
+        return 0
+    fi
+
     RESPONSE="$(github_api POST "${API_SCOPE}/actions/runners/registration-token")"
     RUNNER_TOKEN="$(echo "$RESPONSE" | jq -r '.token // empty')"
 
@@ -364,6 +392,10 @@ get_registration_token() {
 }
 
 get_remove_token() {
+    if [[ "${RUNNER_AUTH_MODE}" == "broker" ]]; then
+        return 1
+    fi
+
     RESPONSE="$(
         github_api POST "${API_SCOPE}/actions/runners/remove-token" \
         2>/dev/null || true
@@ -379,6 +411,11 @@ get_remove_token() {
 }
 
 remove_remote_runner() {
+    if [[ "${RUNNER_AUTH_MODE}" == "broker" ]]; then
+        echo "Broker mode: stale remote registration is managed by the dashboard"
+        return 0
+    fi
+
     echo "Checking for stale runner: ${RUNNER_NAME}"
 
     RESPONSE="$(
@@ -403,6 +440,11 @@ remove_remote_runner() {
 remove_local_configuration() {
     if [[ -f ".runner" ]]; then
         echo "Existing local runner configuration detected."
+
+        if [[ "${RUNNER_AUTH_MODE}" == "broker" ]]; then
+            rm -f .runner .credentials .credentials_rsaparams || true
+            return 0
+        fi
 
         if get_remove_token; then
             ./config.sh remove \
@@ -447,12 +489,14 @@ cleanup() {
         wait "$RUNNER_PID" 2>/dev/null || true
     fi
 
-    if get_remove_token; then
+    if [[ "${RUNNER_AUTH_MODE}" != "broker" ]] && get_remove_token; then
         echo "Removing GitHub runner registration..."
         ./config.sh remove \
             --unattended \
             --token "$REMOVE_TOKEN" \
             2>/dev/null || true
+    else
+        echo "Broker mode: dashboard/node-agent owns remote runner cleanup."
     fi
 }
 
