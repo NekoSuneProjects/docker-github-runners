@@ -644,7 +644,7 @@ const server = http.createServer(async (req, res) => {
     if (!session) { if (url.pathname.startsWith('/api/')) return json(res, 401, { error: 'Authentication required' }); return redirect(res, '/login'); }
 
     if (url.pathname === '/api/session') return json(res, 200, { authenticated: true, username: session.u, expires_at: Number.isFinite(session.exp) ? new Date(session.exp * 1000).toISOString() : null });
-    if (url.pathname === '/api/health') return json(res, 200, { ok: true, org: GITHUB_ORG, token_configured: Boolean(GITHUB_TOKEN), refresh_seconds: REFRESH_SECONDS, remote_nodes_enabled: Boolean(NODE_SHARED_SECRET), connected_nodes: nodes.size });
+    if (url.pathname === '/api/health') return json(res, 200, { ok: true, org: GITHUB_ORG, github_auth_mode: GITHUB_AUTH_MODE, credential_broker_configured: GITHUB_AUTH_MODE === 'app' ? Boolean(GITHUB_APP_ID && appPrivateKey()) : Boolean(GITHUB_TOKEN), token_configured: Boolean(GITHUB_TOKEN), refresh_seconds: REFRESH_SECONDS, remote_nodes_enabled: Boolean(NODE_SHARED_SECRET), connected_nodes: nodes.size });
     if (url.pathname === '/api/overview') return json(res, 200, await getOverview());
     if (url.pathname === '/api/nodes') return json(res, 200, getNodesSummary());
     if (url.pathname === '/api/node') { const id = sanitizeNodeId(url.searchParams.get('id')), node = nodes.get(id); if (!node) return json(res, 404, { error: 'Node not found' }); return json(res, 200, { node: publicNode(node), log_tail: node.log_tail || '' }); }
@@ -670,8 +670,9 @@ async function start() {
     console.log(`Authentication: ${authConfigured ? 'enabled' : 'disabled by explicit configuration'}`);
     console.log(`Session lifetime: ${SESSION_TTL_HOURS} hour(s)`);
     console.log(`Remote node aggregation: ${NODE_SHARED_SECRET ? `enabled (${nodes.size} cached node(s))` : 'disabled'}`);
+    console.log(`GitHub credential broker: ${GITHUB_AUTH_MODE} mode; targets orgs=${BROKER_ORGS || 'off'} personal=${BROKER_PERSONAL_REPOS || 'off'}`);
     if (COOKIE_SECURE) console.log('Secure session cookies: enabled');
-    if (!GITHUB_TOKEN) console.warn('WARNING: No GitHub token configured. API rate limits and private data access will be limited.');
+    if (!GITHUB_TOKEN && GITHUB_AUTH_MODE !== 'app') console.warn('WARNING: No GitHub token configured. API rate limits and private data access will be limited.');
   });
 }
 
