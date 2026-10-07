@@ -141,6 +141,27 @@ Typical runner labels:
 LABELS=docker,buildx,multiarch,builder
 ```
 
+## GitHub authentication modes
+
+The fleet supports two authentication modes:
+
+```env
+GITHUB_AUTH_MODE=token
+ACCESS_TOKEN=github_pat_...
+```
+
+or the recommended multi-account GitHub App mode:
+
+```env
+GITHUB_AUTH_MODE=app
+GITHUB_APP_ID=123456
+GITHUB_APP_PRIVATE_KEY_BASE64=...
+```
+
+In App mode the node-agent signs a short-lived GitHub App JWT, discovers the App installation for each selected organization/repository, mints an installation access token, caches it safely before expiry, and gives each runner registration the token for its own target. The App private key stays in the node-agent and is not passed into runner containers.
+
+See [GITHUB-APP.md](GITHUB-APP.md) for App creation, permissions, installation and configuration.
+
 ## Multi-organization physical nodes
 
 Remote nodes can now serve multiple GitHub organizations without deploying one node stack per organization.
