@@ -174,7 +174,7 @@ Fleet nodes automatically classify their physical host from CPU and RAM and add 
 ```text
 small   -> neko-size-small,  neko-lite
 medium  -> neko-size-medium, neko-build
-large   -> neko-size-large,  neko-heavy
+large   -> neko-size-large,  neko-build, neko-heavy
 GPU     -> neko-gpu
 all     -> neko-any
 ```
