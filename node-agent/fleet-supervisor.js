@@ -2,10 +2,24 @@
 
 const fs = require('fs');
 const os = require('os');
+const crypto = require('crypto');
 const { spawn, execFile } = require('child_process');
 
 const DASHBOARD_URL = String(process.env.DASHBOARD_URL || '').replace(/\/+$/, '');
 const NODE_TOKEN = String(process.env.DASHBOARD_NODE_SHARED_SECRET || '');
+
+const GITHUB_AUTH_MODE = String(process.env.GITHUB_AUTH_MODE || 'app').trim().toLowerCase();
+const GITHUB_TOKEN = String(process.env.ACCESS_TOKEN || '').trim();
+const GITHUB_APP_ID = String(process.env.GITHUB_APP_ID || '').trim();
+const GITHUB_APP_PRIVATE_KEY_RAW = String(process.env.GITHUB_APP_PRIVATE_KEY || '');
+const GITHUB_APP_PRIVATE_KEY_BASE64 = String(process.env.GITHUB_APP_PRIVATE_KEY_BASE64 || '').trim();
+const GITHUB_ORGS = String(process.env.GITHUB_ORGS || 'auto').trim();
+const GITHUB_ORG_INCLUDE = csv(process.env.GITHUB_ORG_INCLUDE);
+const GITHUB_ORG_EXCLUDE = new Set(csv(process.env.GITHUB_ORG_EXCLUDE).map(v => v.toLowerCase()));
+const GITHUB_PERSONAL_REPOS = String(process.env.GITHUB_PERSONAL_REPOS || 'auto').trim();
+const GITHUB_PERSONAL_REPO_INCLUDE = csv(process.env.GITHUB_PERSONAL_REPO_INCLUDE);
+const GITHUB_PERSONAL_REPO_EXCLUDE = new Set(csv(process.env.GITHUB_PERSONAL_REPO_EXCLUDE).map(v => v.toLowerCase()));
+const GITHUB_PERSONAL_INCLUDE_ARCHIVED = /^(1|true|yes|on)$/i.test(String(process.env.GITHUB_PERSONAL_INCLUDE_ARCHIVED || 'false'));
 
 const NODE_ID = safe(process.env.NODE_ID || 'node');
 const PREFIX = safe(process.env.RUNNER_NAME_PREFIX || process.env.RUNNER_NAME || NODE_ID || 'neko-runner');
@@ -27,6 +41,10 @@ const SMALL_MAX_RAM_GB = Math.max(1, Number(process.env.NODE_SMALL_MAX_RAM_GB ||
 const LARGE_MIN_CPU = Math.max(2, Number(process.env.NODE_LARGE_MIN_CPU || 8));
 const LARGE_MIN_RAM_GB = Math.max(4, Number(process.env.NODE_LARGE_MIN_RAM_GB || 16));
 
+const API_VERSION = '2022-11-28';
+const installationIdCache = new Map();
+const installationTokenCache = new Map();
+
 let child = null;
 let stopping = false;
 let timer = null;
@@ -34,28 +52,21 @@ let timer = null;
 function csv(value) {
   return String(value || '').split(',').map(v => v.trim()).filter(Boolean);
 }
-
 function safe(value) {
   return String(value || '').trim().replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 70);
 }
-
-function readHostText(file) {
-  try { return fs.readFileSync(file, 'utf8'); } catch { return ''; }
-}
-
+function readHostText(file) { try { return fs.readFileSync(file, 'utf8'); } catch { return ''; } }
 function hostCpuCount() {
   const text = readHostText('/host/proc/cpuinfo');
   const count = text.split('\n').filter(line => /^processor\s*:/i.test(line)).length;
   return count || os.cpus().length || 1;
 }
-
 function hostMemoryBytes() {
   const text = readHostText('/host/proc/meminfo');
   const match = /^MemTotal:\s+(\d+)\s+kB/im.exec(text);
   if (match) return Number(match[1]) * 1024;
   return os.totalmem();
 }
-
 function exec(command, args, timeout = 120000) {
   return new Promise((resolve, reject) => {
     execFile(command, args, { timeout, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
@@ -65,53 +76,222 @@ function exec(command, args, timeout = 120000) {
   });
 }
 
-async function broker(pathname, options = {}) {
-  const r = await fetch(`${DASHBOARD_URL}${pathname}`, {
+function appPrivateKey() {
+  if (GITHUB_APP_PRIVATE_KEY_BASE64) return Buffer.from(GITHUB_APP_PRIVATE_KEY_BASE64, 'base64').toString('utf8');
+  return GITHUB_APP_PRIVATE_KEY_RAW.replace(/\\n/g, '\n').trim();
+}
+function createAppJwt() {
+  const key = appPrivateKey();
+  if (!GITHUB_APP_ID || !key) throw new Error('GitHub App credentials are not configured on this agent');
+  const now = Math.floor(Date.now() / 1000);
+  const header = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString('base64url');
+  const payload = Buffer.from(JSON.stringify({ iat: now - 60, exp: now + 540, iss: GITHUB_APP_ID })).toString('base64url');
+  const input = `${header}.${payload}`;
+  const signature = crypto.sign('RSA-SHA256', Buffer.from(input), key).toString('base64url');
+  return `${input}.${signature}`;
+}
+async function githubFetch(apiPath, options = {}) {
+  const token = options.token || (GITHUB_AUTH_MODE === 'app' ? createAppJwt() : GITHUB_TOKEN);
+  if (!token) throw new Error('GitHub credentials are not configured on this agent');
+  const r = await fetch(`https://api.github.com${apiPath}`, {
     method: options.method || 'GET',
     headers: {
-      Authorization: `Bearer ${NODE_TOKEN}`,
-      Accept: 'application/json',
+      Authorization: `Bearer ${token}`,
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': API_VERSION,
+      'User-Agent': 'neko-runner-agent/3.0',
       ...(options.body ? { 'Content-Type': 'application/json' } : {}),
-      'User-Agent': 'neko-runner-fleet-worker/2.0',
     },
     body: options.body ? JSON.stringify(options.body) : undefined,
   });
-
-  const text = await r.text();
-  let data = {};
-  try { data = text ? JSON.parse(text) : {}; } catch {}
-
-  if (!r.ok) {
-    throw new Error(`dashboard broker ${r.status}: ${data.error || text.slice(0, 300) || r.statusText}`);
+  const raw = await r.text();
+  if (!r.ok) throw new Error(`GitHub API ${r.status}: ${raw.slice(0, 500) || r.statusText}`);
+  if (r.status === 204 || !raw) return {};
+  return JSON.parse(raw);
+}
+async function listAppInstallations() {
+  const out = [];
+  for (let page = 1; page <= 20; page++) {
+    const rows = await githubFetch(`/app/installations?per_page=100&page=${page}`);
+    if (!Array.isArray(rows) || !rows.length) break;
+    out.push(...rows);
+    if (rows.length < 100) break;
   }
-  return data;
+  return out;
+}
+async function installationIdForTarget(target) {
+  const key = targetKey(target);
+  if (installationIdCache.has(key)) return installationIdCache.get(key);
+  let data;
+  if (target.scope === 'organization') {
+    data = await githubFetch(`/orgs/${encodeURIComponent(target.org)}/installation`);
+  } else {
+    const [owner, repo] = target.repo.split('/');
+    data = await githubFetch(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/installation`);
+  }
+  if (!data?.id) throw new Error(`No GitHub App installation found for ${key}`);
+  installationIdCache.set(key, data.id);
+  return data.id;
+}
+async function installationTokenById(id) {
+  const key = String(id);
+  const cached = installationTokenCache.get(key);
+  if (cached && cached.expiresAt - Date.now() > 5 * 60 * 1000) return cached.token;
+  const data = await githubFetch(`/app/installations/${id}/access_tokens`, { method: 'POST' });
+  if (!data?.token) throw new Error('GitHub did not return an installation token');
+  const expiresAt = Date.parse(data.expires_at || '') || Date.now() + 55 * 60 * 1000;
+  installationTokenCache.set(key, { token: data.token, expiresAt });
+  return data.token;
+}
+async function tokenForTarget(target) {
+  if (GITHUB_AUTH_MODE !== 'app') return GITHUB_TOKEN;
+  return installationTokenById(await installationIdForTarget(target));
+}
+function targetApiBase(target) {
+  if (target.scope === 'organization') return `/orgs/${encodeURIComponent(target.org)}`;
+  const [owner, repo] = target.repo.split('/');
+  return `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
+}
+async function discoverTargets() {
+  const targets = [];
+
+  if (GITHUB_ORGS && !/^(none|off|false)$/i.test(GITHUB_ORGS)) {
+    let orgs = [];
+    if (/^(auto|\*)$/i.test(GITHUB_ORGS)) {
+      if (GITHUB_AUTH_MODE === 'app') {
+        for (const installation of await listAppInstallations()) {
+          if (installation?.account?.type === 'Organization' && installation?.account?.login) {
+            orgs.push(installation.account.login);
+            installationIdCache.set(`org:${installation.account.login.toLowerCase()}`, installation.id);
+          }
+        }
+      } else {
+        for (let page = 1; page <= 10; page++) {
+          const rows = await githubFetch(`/user/memberships/orgs?state=active&per_page=100&page=${page}`);
+          if (!Array.isArray(rows) || !rows.length) break;
+          for (const row of rows) if (row?.role === 'admin' && row?.organization?.login) orgs.push(row.organization.login);
+          if (rows.length < 100) break;
+        }
+      }
+    } else {
+      orgs = csv(GITHUB_ORGS);
+    }
+    if (GITHUB_ORG_INCLUDE.length) {
+      const allow = new Set(GITHUB_ORG_INCLUDE.map(v => v.toLowerCase()));
+      orgs = orgs.filter(v => allow.has(v.toLowerCase()));
+    }
+    orgs = [...new Set(orgs.filter(v => !GITHUB_ORG_EXCLUDE.has(v.toLowerCase())))];
+    for (const org of orgs) targets.push({ scope: 'organization', org });
+  }
+
+  if (GITHUB_PERSONAL_REPOS && !/^(none|off|false)$/i.test(GITHUB_PERSONAL_REPOS)) {
+    let repos = [];
+    if (/^(auto|\*)$/i.test(GITHUB_PERSONAL_REPOS)) {
+      if (GITHUB_AUTH_MODE === 'app') {
+        for (const installation of await listAppInstallations()) {
+          if (installation?.account?.type !== 'User' || !installation?.id) continue;
+          const token = await installationTokenById(installation.id);
+          for (let page = 1; page <= 20; page++) {
+            const data = await githubFetch(`/installation/repositories?per_page=100&page=${page}`, { token });
+            const rows = Array.isArray(data?.repositories) ? data.repositories : [];
+            if (!rows.length) break;
+            for (const row of rows) {
+              const fullName = String(row?.full_name || '').trim();
+              if (!fullName || (!GITHUB_PERSONAL_INCLUDE_ARCHIVED && row?.archived)) continue;
+              repos.push(fullName);
+              installationIdCache.set(`repo:${fullName.toLowerCase()}`, installation.id);
+            }
+            if (rows.length < 100) break;
+          }
+        }
+      } else {
+        for (let page = 1; page <= 20; page++) {
+          const rows = await githubFetch(`/user/repos?affiliation=owner&visibility=all&sort=full_name&direction=asc&per_page=100&page=${page}`);
+          if (!Array.isArray(rows) || !rows.length) break;
+          for (const row of rows) {
+            const fullName = String(row?.full_name || '').trim();
+            if (!fullName || (!GITHUB_PERSONAL_INCLUDE_ARCHIVED && row?.archived)) continue;
+            repos.push(fullName);
+          }
+          if (rows.length < 100) break;
+        }
+      }
+    } else {
+      repos = csv(GITHUB_PERSONAL_REPOS);
+    }
+    if (GITHUB_PERSONAL_REPO_INCLUDE.length) {
+      const allow = new Set(GITHUB_PERSONAL_REPO_INCLUDE.map(v => v.toLowerCase()));
+      repos = repos.filter(full => allow.has(full.toLowerCase()) || allow.has(full.split('/').pop().toLowerCase()));
+    }
+    repos = [...new Set(repos.filter(full => !GITHUB_PERSONAL_REPO_EXCLUDE.has(full.toLowerCase()) && !GITHUB_PERSONAL_REPO_EXCLUDE.has(full.split('/').pop().toLowerCase())))];
+    for (const repo of repos) targets.push({ scope: 'repository', repo });
+  }
+
+  return targets;
+}
+async function listRunners(target) {
+  const token = await tokenForTarget(target);
+  const base = targetApiBase(target);
+  const all = [];
+  for (let page = 1; page <= 10; page++) {
+    const data = await githubFetch(`${base}/actions/runners?per_page=100&page=${page}`, { token });
+    const rows = Array.isArray(data?.runners) ? data.runners : [];
+    all.push(...rows);
+    if (rows.length < 100) break;
+  }
+  return { token, base, runners: all };
+}
+async function prepareRunner(target, name) {
+  const { token, base, runners } = await listRunners(target);
+  const stale = runners.find(r => r.name === name);
+  if (stale) await githubFetch(`${base}/actions/runners/${stale.id}`, { method: 'DELETE', token });
+  const registration = await githubFetch(`${base}/actions/runners/registration-token`, { method: 'POST', token });
+  if (!registration?.token) throw new Error(`GitHub did not return a registration token for ${targetKey(target)}`);
+  return {
+    config_url: target.scope === 'organization' ? `https://github.com/${target.org}` : `https://github.com/${target.repo}`,
+    registration_token: registration.token,
+  };
+}
+async function syncLabels(target, name, labels) {
+  const { token, base, runners } = await listRunners(target);
+  const runner = runners.find(r => r.name === name);
+  if (!runner) throw new Error(`Runner ${name} is not registered yet`);
+  await githubFetch(`${base}/actions/runners/${runner.id}/labels`, {
+    method: 'PUT',
+    token,
+    body: { labels },
+  });
+}
+async function removeRemoteRunner(target, name) {
+  try {
+    const { token, base, runners } = await listRunners(target);
+    const runner = runners.find(r => r.name === name);
+    if (runner) await githubFetch(`${base}/actions/runners/${runner.id}`, { method: 'DELETE', token });
+  } catch (err) {
+    console.warn(`[fleet] remote remove ${targetKey(target)}: ${err.message}`);
+  }
 }
 
 async function detectGpu() {
   if (/^(1|true|yes|on|gpu|nvidia)$/i.test(GPU_OVERRIDE)) return true;
   if (/^(0|false|no|off|none)$/i.test(GPU_OVERRIDE)) return false;
-
   try {
     const runtimes = await exec('docker', ['info', '--format', '{{json .Runtimes}}'], 15000);
     if (/nvidia/i.test(runtimes)) return true;
   } catch {}
-
   return false;
 }
-
 async function detectCapabilities() {
   const cpu = hostCpuCount();
   const memoryBytes = hostMemoryBytes();
   const ramGb = memoryBytes / (1024 ** 3);
   const gpu = await detectGpu();
-
   let size = CAPACITY_OVERRIDE;
   if (!['small', 'medium', 'large'].includes(size)) {
     if (cpu <= SMALL_MAX_CPU || ramGb <= SMALL_MAX_RAM_GB) size = 'small';
     else if (cpu >= LARGE_MIN_CPU && ramGb >= LARGE_MIN_RAM_GB) size = 'large';
     else size = 'medium';
   }
-
   const labels = new Set(csv(LABELS));
   labels.add(`neko-size-${size}`);
   labels.add('neko-any');
@@ -119,111 +299,54 @@ async function detectCapabilities() {
   if (size === 'medium' || size === 'large') labels.add('neko-build');
   if (size === 'large') labels.add('neko-heavy');
   if (gpu) labels.add('neko-gpu');
-
   return {
-    cpu,
-    memory_bytes: memoryBytes,
-    ram_gb: Number(ramGb.toFixed(1)),
-    size,
-    gpu,
+    cpu, memory_bytes: memoryBytes, ram_gb: Number(ramGb.toFixed(1)), size, gpu,
     labels: [...labels],
     fingerprint: `${size}|${gpu ? 'gpu' : 'cpu'}|${[...labels].sort().join(',')}`,
   };
 }
-
 function targetKey(target) {
-  return target.scope === 'organization'
-    ? `org:${target.org.toLowerCase()}`
-    : `repo:${target.repo.toLowerCase()}`;
+  return target.scope === 'organization' ? `org:${target.org.toLowerCase()}` : `repo:${target.repo.toLowerCase()}`;
 }
-
 function targetFromKey(key) {
   const value = String(key || '');
-  if (value.startsWith('org:') && value.slice(4)) return { scope:'organization', org:value.slice(4) };
-  if (value.startsWith('repo:') && value.slice(5).includes('/')) return { scope:'repository', repo:value.slice(5) };
+  if (value.startsWith('org:') && value.slice(4)) return { scope: 'organization', org: value.slice(4) };
+  if (value.startsWith('repo:') && value.slice(5).includes('/')) return { scope: 'repository', repo: value.slice(5) };
   return null;
 }
-
 function runnerName(target) {
-  const suffix = target.scope === 'organization'
-    ? `org-${safe(target.org)}`
-    : `repo-${safe(target.repo.replace('/', '-'))}`;
+  const suffix = target.scope === 'organization' ? `org-${safe(target.org)}` : `repo-${safe(target.repo.replace('/', '-'))}`;
   return `${PREFIX}-${suffix}`.slice(0, 64);
 }
-
 function containerName(target) {
-  const suffix = target.scope === 'organization'
-    ? `org-${safe(target.org)}`
-    : `repo-${safe(target.repo.replace('/', '-'))}`;
+  const suffix = target.scope === 'organization' ? `org-${safe(target.org)}` : `repo-${safe(target.repo.replace('/', '-'))}`;
   return `neko-runner-${NODE_ID}-${suffix}`.toLowerCase().slice(0, 120);
 }
-
-async function discoverTargets() {
-  const data = await broker('/internal/runner-broker/targets');
-  return Array.isArray(data.targets) ? data.targets : [];
-}
-
 async function existingRunnerFingerprint(id) {
   if (!id) return '';
-  try {
-    return (await exec('docker', [
-      'inspect', '-f',
-      '{{ index .Config.Labels "neko.runner.capability-fingerprint" }}',
-      id,
-    ], 15000)).trim();
-  } catch {
-    return '';
-  }
+  try { return (await exec('docker', ['inspect', '-f', '{{ index .Config.Labels "neko.runner.capability-fingerprint" }}', id], 15000)).trim(); }
+  catch { return ''; }
 }
-
 async function findContainer(target) {
-  const out = await exec('docker', [
-    'ps', '-aq',
-    '--filter', `label=neko.runner.node=${NODE_ID}`,
-    '--filter', `label=neko.runner.target=${targetKey(target)}`,
-  ], 15000);
+  const out = await exec('docker', ['ps', '-aq', '--filter', `label=neko.runner.node=${NODE_ID}`, '--filter', `label=neko.runner.target=${targetKey(target)}`], 15000);
   return out.trim().split('\n').filter(Boolean)[0] || '';
 }
-
 async function isRunning(id) {
   if (!id) return false;
-  try {
-    return (await exec('docker', ['inspect', '-f', '{{.State.Running}}', id], 15000)).trim() === 'true';
-  } catch {
-    return false;
-  }
+  try { return (await exec('docker', ['inspect', '-f', '{{.State.Running}}', id], 15000)).trim() === 'true'; }
+  catch { return false; }
 }
-
 async function ensureVolume(name) {
-  try {
-    await exec('docker', ['volume', 'inspect', name], 15000);
-  } catch {
-    await exec('docker', ['volume', 'create', name], 15000);
-  }
+  try { await exec('docker', ['volume', 'inspect', name], 15000); }
+  catch { await exec('docker', ['volume', 'create', name], 15000); }
 }
-
-async function syncLabels(target, name, labels) {
-  await broker('/internal/runner-broker/labels', {
-    method: 'PUT',
-    body: { target, runner_name: name, labels },
-  });
-}
-
-async function removeRemoteRunner(target, name) {
-  await broker('/internal/runner-broker/remove', {
-    method: 'POST',
-    body: { target, runner_name: name },
-  }).catch(err => console.warn(`[fleet] remote remove ${targetKey(target)}: ${err.message}`));
-}
-
 async function ensureRunner(target, capabilities) {
   let id = await findContainer(target);
   const name = runnerName(target);
-
   if (id) {
     const fingerprint = await existingRunnerFingerprint(id);
     if (fingerprint !== capabilities.fingerprint) {
-      console.log(`[fleet] recreating ${targetKey(target)}: capacity labels changed (${fingerprint || 'legacy'} -> ${capabilities.fingerprint})`);
+      console.log(`[fleet] recreating ${targetKey(target)}: capacity labels changed`);
       await exec('docker', ['rm', '-f', id], 60000);
       await removeRemoteRunner(target, name);
       id = '';
@@ -231,29 +354,19 @@ async function ensureRunner(target, capabilities) {
       await syncLabels(target, name, capabilities.labels);
       return;
     } else {
-      console.log(`[fleet] recreating stopped broker-managed runner ${targetKey(target)} with a fresh registration token`);
+      console.log(`[fleet] recreating stopped runner ${targetKey(target)} with fresh registration token`);
       await exec('docker', ['rm', '-f', id], 60000);
       await removeRemoteRunner(target, name);
       id = '';
     }
   }
 
-  const prepared = await broker('/internal/runner-broker/prepare', {
-    method: 'POST',
-    body: { target, runner_name: name },
-  });
-
-  if (!prepared.registration_token || !prepared.config_url) {
-    throw new Error(`dashboard did not return a registration token for ${targetKey(target)}`);
-  }
-
+  const prepared = await prepareRunner(target, name);
   const cname = containerName(target);
-  console.log(`[fleet] creating broker-managed runner for ${targetKey(target)}: ${name}`);
+  console.log(`[fleet] creating GitHub runner for ${targetKey(target)}: ${name}`);
 
   const args = [
-    'run', '-d',
-    '--name', cname,
-    '--restart', 'no',
+    'run', '-d', '--name', cname, '--restart', 'no',
     '--label', 'neko.runner.managed=true',
     '--label', `neko.runner.node=${NODE_ID}`,
     '--label', `neko.runner.target=${targetKey(target)}`,
@@ -279,71 +392,47 @@ async function ensureRunner(target, capabilities) {
     '-v', `${DIAG_VOLUME}:/actions-runner/_diag`,
     '-v', `${LOCK_VOLUME}:/runner-lock`,
   ];
-
   if (target.scope === 'organization') args.push('-e', `GITHUB_ORG=${target.org}`);
   else args.push('-e', `REPO_URL=https://github.com/${target.repo}`);
-
   args.push(RUNNER_IMAGE);
   await exec('docker', args, 120000);
 
   for (let attempt = 0; attempt < 10; attempt++) {
-    try {
-      await syncLabels(target, name, capabilities.labels);
-      break;
-    } catch (err) {
+    try { await syncLabels(target, name, capabilities.labels); break; }
+    catch (err) {
       if (attempt === 9) throw err;
       await new Promise(resolve => setTimeout(resolve, 1500));
     }
   }
 }
-
 async function removeUnknownRunners(desired, targetByKey) {
-  const out = await exec('docker', [
-    'ps', '-a',
-    '--format', '{{.ID}} {{.Label "neko.runner.target"}} {{.Label "neko.runner.name"}}',
-    '--filter', `label=neko.runner.node=${NODE_ID}`,
-  ], 15000);
-
+  const out = await exec('docker', ['ps', '-a', '--format', '{{.ID}} {{.Label "neko.runner.target"}} {{.Label "neko.runner.name"}}', '--filter', `label=neko.runner.node=${NODE_ID}`], 15000);
   for (const line of out.split('\n').filter(Boolean)) {
     const parts = line.split(' ');
     const id = parts.shift();
     const key = String(parts.shift() || '').trim().toLowerCase();
     const name = String(parts.join(' ') || '').trim();
     if (!key || desired.has(key)) continue;
-
     console.log(`[fleet] removing no-longer-managed runner ${key}`);
     await exec('docker', ['rm', '-f', id], 60000).catch(() => {});
-
     const target = targetByKey.get(key) || targetFromKey(key);
     if (target && name) await removeRemoteRunner(target, name);
   }
 }
-
 async function reconcile() {
   if (stopping) return;
   try {
     const capabilities = await detectCapabilities();
     const targets = await discoverTargets();
-    if (!targets.length) throw new Error('Dashboard returned no GitHub runner targets');
-
-    await Promise.all([
-      ensureVolume(WORK_VOLUME),
-      ensureVolume(DIAG_VOLUME),
-      ensureVolume(LOCK_VOLUME),
-    ]);
-
+    if (!targets.length) throw new Error('Agent discovered no GitHub runner targets');
+    await Promise.all([ensureVolume(WORK_VOLUME), ensureVolume(DIAG_VOLUME), ensureVolume(LOCK_VOLUME)]);
     const desired = new Set(targets.map(targetKey));
     const targetByKey = new Map(targets.map(t => [targetKey(t), t]));
     await removeUnknownRunners(desired, targetByKey);
-
     for (const target of targets) {
-      try {
-        await ensureRunner(target, capabilities);
-      } catch (err) {
-        console.error(`[fleet] ${targetKey(target)}: ${err.output || err.message}`);
-      }
+      try { await ensureRunner(target, capabilities); }
+      catch (err) { console.error(`[fleet] ${targetKey(target)}: ${err.output || err.message}`); }
     }
-
     const orgCount = targets.filter(v => v.scope === 'organization').length;
     const repoCount = targets.filter(v => v.scope === 'repository').length;
     console.log(`[fleet] reconciled ${targets.length} target(s): ${orgCount} org(s), ${repoCount} personal repo(s); node=${capabilities.size} cpu=${capabilities.cpu} ram=${capabilities.ram_gb}GB gpu=${capabilities.gpu}; shared concurrency=1`);
@@ -353,7 +442,6 @@ async function reconcile() {
     if (!stopping) timer = setTimeout(reconcile, RECONCILE_SECONDS * 1000);
   }
 }
-
 function startAgent() {
   if (child || stopping) return;
   const env = {
@@ -362,45 +450,35 @@ function startAgent() {
     GITHUB_APP_ID: '',
     GITHUB_APP_PRIVATE_KEY: '',
     GITHUB_APP_PRIVATE_KEY_BASE64: '',
-    RUNNER_NAME: process.env.RUNNER_NAME || PREFIX,
     GITHUB_ORG: '',
     REPO_URL: '',
     RUNNER_SCOPE: 'organization',
+    RUNNER_NAME: process.env.RUNNER_NAME || PREFIX,
   };
   child = spawn(process.execPath, ['/app/agent.js'], { stdio: 'inherit', env });
-  console.log(`[fleet] node agent started pid=${child.pid}`);
+  console.log(`[fleet] dashboard heartbeat agent started pid=${child.pid}`);
   child.once('exit', (code, signal) => {
     child = null;
     if (stopping) return;
-    console.error(`[fleet] node agent exited code=${code} signal=${signal || 'none'}; restarting in 2s`);
+    console.error(`[fleet] heartbeat agent exited code=${code} signal=${signal || 'none'}; restarting in 2s`);
     setTimeout(startAgent, 2000);
   });
 }
-
 async function stopFleet() {
   try {
-    const out = await exec('docker', [
-      'ps', '-a',
-      '--format', '{{.ID}} {{.Label "neko.runner.target"}} {{.Label "neko.runner.name"}}',
-      '--filter', `label=neko.runner.node=${NODE_ID}`,
-    ], 15000);
-
+    const targets = await discoverTargets().catch(() => []);
+    const out = await exec('docker', ['ps', '-a', '--format', '{{.ID}} {{.Label "neko.runner.target"}} {{.Label "neko.runner.name"}}', '--filter', `label=neko.runner.node=${NODE_ID}`], 15000);
     for (const line of out.split('\n').filter(Boolean)) {
       const parts = line.split(' ');
       const id = parts.shift();
       const key = String(parts.shift() || '');
       const name = String(parts.join(' ') || '');
       await exec('docker', ['stop', '-t', '30', id], 60000).catch(() => {});
-
-      try {
-        const targets = await discoverTargets();
-        const target = targets.find(t => targetKey(t) === key);
-        if (target && name) await removeRemoteRunner(target, name);
-      } catch {}
+      const target = targets.find(t => targetKey(t) === key) || targetFromKey(key);
+      if (target && name) await removeRemoteRunner(target, name);
     }
   } catch {}
 }
-
 function stop(signal) {
   if (stopping) return;
   stopping = true;
@@ -411,16 +489,27 @@ function stop(signal) {
 }
 
 if (!/^https?:\/\//i.test(DASHBOARD_URL)) {
-  console.error('ERROR: DASHBOARD_URL must be configured for broker-managed fleet mode');
+  console.error('ERROR: DASHBOARD_URL must be configured so the agent can report status to the dashboard');
   process.exit(1);
 }
 if (NODE_TOKEN.length < 32) {
   console.error('ERROR: DASHBOARD_NODE_SHARED_SECRET must be at least 32 characters');
   process.exit(1);
 }
+if (!['app', 'token'].includes(GITHUB_AUTH_MODE)) {
+  console.error('ERROR: GITHUB_AUTH_MODE must be app or token');
+  process.exit(1);
+}
+if (GITHUB_AUTH_MODE === 'app' && (!GITHUB_APP_ID || !appPrivateKey())) {
+  console.error('ERROR: GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY_BASE64 (or GITHUB_APP_PRIVATE_KEY) are required on the agent');
+  process.exit(1);
+}
+if (GITHUB_AUTH_MODE === 'token' && !GITHUB_TOKEN) {
+  console.error('ERROR: ACCESS_TOKEN is required on the agent in token mode');
+  process.exit(1);
+}
 
-console.log(`[fleet] dashboard-broker mode enabled for node ${NODE_ID}; no GitHub long-lived credentials are stored on this node`);
-
+console.log(`[fleet] direct GitHub mode enabled for node ${NODE_ID}; GitHub runner lifecycle is owned by this agent`);
 detectCapabilities()
   .then(capabilities => {
     process.env.NODE_LABELS = capabilities.labels.join(',');
