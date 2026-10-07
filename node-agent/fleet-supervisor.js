@@ -2,10 +2,18 @@
 
 const fs = require('fs');
 const os = require('os');
+const crypto = require('crypto');
 const { spawn, execFile } = require('child_process');
 
 const DASHBOARD_URL = String(process.env.DASHBOARD_URL || '').replace(/\/+$/, '');
 const ACCESS_TOKEN = String(process.env.ACCESS_TOKEN || '');
+const AUTH_MODE = String(process.env.GITHUB_AUTH_MODE || 'token').trim().toLowerCase();
+const GITHUB_APP_ID = String(process.env.GITHUB_APP_ID || '').trim();
+const GITHUB_APP_PRIVATE_KEY_RAW = String(process.env.GITHUB_APP_PRIVATE_KEY || '');
+const GITHUB_APP_PRIVATE_KEY_BASE64 = String(process.env.GITHUB_APP_PRIVATE_KEY_BASE64 || '').trim();
+const GITHUB_APP_TOKEN_REFRESH_SECONDS = Math.max(300, Math.min(Number(process.env.GITHUB_APP_TOKEN_REFRESH_SECONDS || 3000), 3300));
+const installationTokenCache = new Map();
+const installationIdCache = new Map();
 
 const RAW_ORGS = String(process.env.GITHUB_ORGS || '').trim();
 const ORG_INCLUDE = csv(process.env.GITHUB_ORG_INCLUDE);
@@ -55,6 +63,100 @@ function truthy(value) {
 function safe(value) {
   return String(value || '').trim().replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 70);
 }
+function appPrivateKey() {
+  if (GITHUB_APP_PRIVATE_KEY_BASE64) {
+    return Buffer.from(GITHUB_APP_PRIVATE_KEY_BASE64, 'base64').toString('utf8');
+  }
+  return GITHUB_APP_PRIVATE_KEY_RAW.replace(/\\n/g, '\n').trim();
+}
+
+function base64url(value) {
+  return Buffer.from(value).toString('base64url');
+}
+
+function createAppJwt() {
+  const key = appPrivateKey();
+  if (!GITHUB_APP_ID || !key) throw new Error('GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY (or GITHUB_APP_PRIVATE_KEY_BASE64) are required in app mode');
+
+  const now = Math.floor(Date.now() / 1000);
+  const header = { alg: 'RS256', typ: 'JWT' };
+  const payload = { iat: now - 60, exp: now + 540, iss: GITHUB_APP_ID };
+  const input = `${base64url(JSON.stringify(header))}.${base64url(JSON.stringify(payload))}`;
+  const signature = crypto.sign('RSA-SHA256', Buffer.from(input), key).toString('base64url');
+  return `${input}.${signature}`;
+}
+
+async function githubRequest(pathname, options = {}) {
+  const token = options.token || ACCESS_TOKEN;
+  const headers = {
+    Authorization: `Bearer ${token}`,
+    Accept: 'application/vnd.github+json',
+    'X-GitHub-Api-Version': '2026-03-10',
+    'User-Agent': 'neko-github-runner-fleet/1.3',
+    ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+  };
+  const r = await fetch(`https://api.github.com${pathname}`, {
+    method: options.method || 'GET',
+    headers,
+    body: options.body ? JSON.stringify(options.body) : undefined,
+  });
+  if (!r.ok) throw new Error(`GitHub ${r.status} for ${pathname}: ${(await r.text()).slice(0, 300)}`);
+  if (r.status === 204) return {};
+  return r.json();
+}
+
+async function appGithub(pathname, options = {}) {
+  return githubRequest(pathname, { ...options, token: createAppJwt() });
+}
+
+async function listAppInstallations() {
+  const rows = [];
+  for (let page = 1; page <= 20; page++) {
+    const batch = await appGithub(`/app/installations?per_page=100&page=${page}`);
+    if (!Array.isArray(batch) || !batch.length) break;
+    rows.push(...batch);
+    if (batch.length < 100) break;
+  }
+  return rows;
+}
+
+async function installationIdForTarget(target) {
+  const key = targetKey(target);
+  if (installationIdCache.has(key)) return installationIdCache.get(key);
+
+  let data;
+  if (target.scope === 'organization') {
+    data = await appGithub(`/orgs/${encodeURIComponent(target.org)}/installation`);
+  } else {
+    const [owner, repo] = target.repo.split('/');
+    data = await appGithub(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/installation`);
+  }
+
+  if (!data?.id) throw new Error(`No GitHub App installation found for ${key}`);
+  installationIdCache.set(key, data.id);
+  return data.id;
+}
+
+async function installationToken(installationId) {
+  const cacheKey = String(installationId);
+  const cached = installationTokenCache.get(cacheKey);
+  if (cached && cached.refreshAt > Date.now()) return cached.token;
+
+  const data = await appGithub(`/app/installations/${installationId}/access_tokens`, { method: 'POST' });
+  if (!data?.token) throw new Error(`GitHub did not return an installation token for installation ${installationId}`);
+
+  const expiresAt = data.expires_at ? Date.parse(data.expires_at) : Date.now() + 55 * 60 * 1000;
+  const refreshAt = Math.min(expiresAt - 5 * 60 * 1000, Date.now() + GITHUB_APP_TOKEN_REFRESH_SECONDS * 1000);
+  installationTokenCache.set(cacheKey, { token: data.token, expiresAt, refreshAt });
+  return data.token;
+}
+
+async function tokenForTarget(target) {
+  if (AUTH_MODE !== 'app') return ACCESS_TOKEN;
+  const installationId = target.installation_id || await installationIdForTarget(target);
+  return installationToken(installationId);
+}
+
 
 function readHostText(file) {
   try { return fs.readFileSync(file, 'utf8'); } catch { return ''; }
@@ -151,22 +253,8 @@ function exec(command, args, timeout = 120000) {
 }
 
 async function github(pathname, options = {}) {
-  const r = await fetch(`https://api.github.com${pathname}`, {
-    method: options.method || 'GET',
-    headers: {
-      Authorization: `Bearer ${ACCESS_TOKEN}`,
-      Accept: 'application/vnd.github+json',
-      'X-GitHub-Api-Version': '2026-03-10',
-      'User-Agent': 'neko-github-runner-fleet/1.2',
-      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
-    },
-    body: options.body ? JSON.stringify(options.body) : undefined,
-  });
-  if (!r.ok) throw new Error(`GitHub ${r.status} for ${pathname}: ${(await r.text()).slice(0, 220)}`);
-  if (r.status === 204) return {};
-  return r.json();
+  return githubRequest(pathname, options);
 }
-
 function runnerApiBase(target) {
   return target.scope === 'organization'
     ? `/orgs/${encodeURIComponent(target.org)}/actions/runners`
@@ -175,8 +263,9 @@ function runnerApiBase(target) {
 
 async function findGitHubRunner(target, name) {
   const base = runnerApiBase(target);
+  const token = await tokenForTarget(target);
   for (let attempt = 0; attempt < 10; attempt++) {
-    const data = await github(`${base}?per_page=100`);
+    const data = await github(`${base}?per_page=100`, { token });
     const runner = (data.runners || []).find(v => v.name === name);
     if (runner) return runner;
     if (attempt < 9) await new Promise(resolve => setTimeout(resolve, 1500));
@@ -191,9 +280,10 @@ async function syncGitHubRunnerLabels(target, name, labels) {
   }
 
   const desired = [...new Set(labels.map(v => String(v).trim()).filter(Boolean))].slice(0, 100);
+  const token = await tokenForTarget(target);
   const result = await github(
     `${runnerApiBase(target)}/${runner.id}/labels`,
-    { method: 'PUT', body: { labels: desired } },
+    { method: 'PUT', body: { labels: desired }, token },
   );
 
   const applied = (result.labels || [])
@@ -211,13 +301,23 @@ async function discoverOrgs() {
   let orgs;
   if (/^(auto|\*)$/i.test(RAW_ORGS)) {
     orgs = [];
-    for (let page = 1; page <= 10; page++) {
-      const rows = await github(`/user/memberships/orgs?state=active&per_page=100&page=${page}`);
-      if (!Array.isArray(rows) || !rows.length) break;
-      for (const row of rows) {
-        if (row?.role === 'admin' && row?.organization?.login) orgs.push(row.organization.login);
+    if (AUTH_MODE === 'app') {
+      const installations = await listAppInstallations();
+      for (const installation of installations) {
+        if (installation?.account?.type === 'Organization' && installation?.account?.login) {
+          orgs.push(installation.account.login);
+          installationIdCache.set(`org:${installation.account.login.toLowerCase()}`, installation.id);
+        }
       }
-      if (rows.length < 100) break;
+    } else {
+      for (let page = 1; page <= 10; page++) {
+        const rows = await github(`/user/memberships/orgs?state=active&per_page=100&page=${page}`);
+        if (!Array.isArray(rows) || !rows.length) break;
+        for (const row of rows) {
+          if (row?.role === 'admin' && row?.organization?.login) orgs.push(row.organization.login);
+        }
+        if (rows.length < 100) break;
+      }
     }
   } else {
     orgs = csv(RAW_ORGS);
@@ -243,23 +343,44 @@ async function discoverPersonalRepos() {
 
   let repos = [];
   if (/^(auto|\*)$/i.test(RAW_PERSONAL_REPOS)) {
-    const me = await github('/user');
-    const login = String(me?.login || '').trim();
-    if (!login) throw new Error('GitHub /user did not return a login for personal repository discovery');
-
-    for (let page = 1; page <= 20; page++) {
-      const rows = await github(`/user/repos?affiliation=owner&visibility=all&sort=full_name&direction=asc&per_page=100&page=${page}`);
-      if (!Array.isArray(rows) || !rows.length) break;
-
-      for (const row of rows) {
-        const fullName = String(row?.full_name || '').trim();
-        const owner = String(row?.owner?.login || '').trim();
-        if (!fullName || owner.toLowerCase() !== login.toLowerCase()) continue;
-        if (!INCLUDE_ARCHIVED && row?.archived === true) continue;
-        repos.push(fullName);
+    if (AUTH_MODE === 'app') {
+      const installations = await listAppInstallations();
+      for (const installation of installations) {
+        if (installation?.account?.type !== 'User' || !installation?.id) continue;
+        const token = await installationToken(installation.id);
+        for (let page = 1; page <= 20; page++) {
+          const data = await github(`/installation/repositories?per_page=100&page=${page}`, { token });
+          const rows = Array.isArray(data?.repositories) ? data.repositories : [];
+          if (!rows.length) break;
+          for (const row of rows) {
+            const fullName = String(row?.full_name || '').trim();
+            if (!fullName) continue;
+            if (!INCLUDE_ARCHIVED && row?.archived === true) continue;
+            repos.push(fullName);
+            installationIdCache.set(`repo:${fullName.toLowerCase()}`, installation.id);
+          }
+          if (rows.length < 100) break;
+        }
       }
+    } else {
+      const me = await github('/user');
+      const login = String(me?.login || '').trim();
+      if (!login) throw new Error('GitHub /user did not return a login for personal repository discovery');
 
-      if (rows.length < 100) break;
+      for (let page = 1; page <= 20; page++) {
+        const rows = await github(`/user/repos?affiliation=owner&visibility=all&sort=full_name&direction=asc&per_page=100&page=${page}`);
+        if (!Array.isArray(rows) || !rows.length) break;
+
+        for (const row of rows) {
+          const fullName = String(row?.full_name || '').trim();
+          const owner = String(row?.owner?.login || '').trim();
+          if (!fullName || owner.toLowerCase() !== login.toLowerCase()) continue;
+          if (!INCLUDE_ARCHIVED && row?.archived === true) continue;
+          repos.push(fullName);
+        }
+
+        if (rows.length < 100) break;
+      }
     }
   } else {
     repos = csv(RAW_PERSONAL_REPOS).map(value => {
@@ -348,22 +469,31 @@ async function ensureRunner(target, capabilities) {
       id = '';
     } else {
       if (!(await isRunning(id))) {
-        console.log(`[fleet] starting ${targetKey(target)} runner ${id}`);
-        await exec('docker', ['start', id], 60000);
+        if (AUTH_MODE === 'app') {
+          console.log(`[fleet] recreating stopped App-auth runner ${targetKey(target)} with a fresh installation token`);
+          await exec('docker', ['rm', '-f', id], 60000);
+          id = '';
+        } else {
+          console.log(`[fleet] starting ${targetKey(target)} runner ${id}`);
+          await exec('docker', ['start', id], 60000);
+        }
       }
-      await syncGitHubRunnerLabels(target, runnerName(target), capabilities.labels);
-      return;
+      if (id) {
+        await syncGitHubRunnerLabels(target, runnerName(target), capabilities.labels);
+        return;
+      }
     }
   }
 
   const name = runnerName(target);
   const cname = containerName(target);
+  const targetToken = await tokenForTarget(target);
   console.log(`[fleet] creating runner for ${targetKey(target)}: ${name}`);
 
   const args = [
     'run', '-d',
     '--name', cname,
-    '--restart', 'unless-stopped',
+    '--restart', AUTH_MODE === 'app' ? 'no' : 'unless-stopped',
     '--label', 'neko.runner.managed=true',
     '--label', `neko.runner.node=${NODE_ID}`,
     '--label', `neko.runner.target=${targetKey(target)}`,
@@ -373,7 +503,7 @@ async function ensureRunner(target, capabilities) {
     '--label', `neko.runner.gpu=${capabilities.gpu ? 'true' : 'false'}`,
     '--label', `neko.runner.capability-fingerprint=${capabilities.fingerprint}`,
     '-e', `RUNNER_SCOPE=${target.scope}`,
-    '-e', `ACCESS_TOKEN=${ACCESS_TOKEN}`,
+    '-e', `ACCESS_TOKEN=${targetToken}`,
     '-e', `RUNNER_NAME=${name}`,
     '-e', `LABELS=${capabilities.labels.join(',')}`,
     '-e', `RUNNER_UPDATE_ON_START=${UPDATE_ON_START}`,
@@ -491,13 +621,18 @@ function stop(signal) {
   stopFleet().finally(() => setTimeout(() => process.exit(0), 100).unref());
 }
 
-if (!ACCESS_TOKEN) {
-  console.error('ERROR: ACCESS_TOKEN is required for GitHub runner fleet mode');
+if (AUTH_MODE === 'app') {
+  if (!GITHUB_APP_ID || !appPrivateKey()) {
+    console.error('ERROR: GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY (or GITHUB_APP_PRIVATE_KEY_BASE64) are required when GITHUB_AUTH_MODE=app');
+    process.exit(1);
+  }
+} else if (!ACCESS_TOKEN) {
+  console.error('ERROR: ACCESS_TOKEN is required when GITHUB_AUTH_MODE=token');
   process.exit(1);
 }
 
 console.log(
-  `[fleet] mode enabled for node ${NODE_ID}; orgs=${RAW_ORGS || 'off'}; personal-repos=${RAW_PERSONAL_REPOS || 'off'}; one shared job slot`,
+  `[fleet] mode enabled for node ${NODE_ID}; auth=${AUTH_MODE}; orgs=${RAW_ORGS || 'off'}; personal-repos=${RAW_PERSONAL_REPOS || 'off'}; one shared job slot`,
 );
 
 detectCapabilities()
