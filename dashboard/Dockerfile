@@ -9,7 +9,7 @@ WORKDIR /app
 COPY package.json /app/package.json
 RUN npm install --omit=dev --no-audit --no-fund
 
-COPY server-v3.js /app/server.js
+COPY server.js /app/server.js
 COPY server-realtime.js /app/server-realtime.js
 COPY server-control.js /app/server-control.js
 COPY server-websocket.js /app/server-websocket.js
