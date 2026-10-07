@@ -7,6 +7,15 @@ on:
       - node-agent/**
       - .github/workflows/docker.yml
   workflow_dispatch:
+    inputs:
+      build_runner:
+        description: Where should this image build run?
+        required: true
+        default: github-hosted
+        type: choice
+        options:
+          - github-hosted
+          - self-hosted
 
 concurrency:
   group: agent-image-${{ github.ref }}
@@ -18,7 +27,8 @@ permissions:
 
 jobs:
   agent:
-    runs-on: [self-hosted, linux, docker, buildx]
+    name: Build Agent AMD64 + ARM64 (${{ github.event_name == 'workflow_dispatch' && inputs.build_runner || 'self-hosted' }})
+    runs-on: ${{ github.event_name == 'workflow_dispatch' && inputs.build_runner == 'github-hosted' && 'ubuntu-latest' || fromJSON('["self-hosted","linux","docker","buildx"]') }}
     timeout-minutes: 30
 
     steps:
@@ -49,9 +59,6 @@ jobs:
             type=raw,value=latest
             type=sha,prefix=sha-
 
-      # The agent image is intentionally tiny. Avoid GHA cache import/export here:
-      # cache transfer can take longer than rebuilding the few Alpine layers on a
-      # slow self-hosted VPS and gives us another place for a build to stall.
       - name: Build and push AMD64 + ARM64 agent
         uses: docker/build-push-action@v6
         with:
