@@ -1,5 +1,5 @@
-# Credential-free worker node.
-# GitHub credentials and org/repository selection stay on the dashboard.
+# GitHub runner fleet worker.
+# This agent talks directly to GitHub and reports status to the dashboard.
 services:
   node-agent:
     image: ${NODE_AGENT_IMAGE:-ghcr.io/nekosuneprojects/docker-github-runners-node-agent:latest}
@@ -11,6 +11,20 @@ services:
     environment:
       DASHBOARD_URL: ${CENTRAL_DASHBOARD_URL}
       DASHBOARD_NODE_SHARED_SECRET: ${DASHBOARD_NODE_SHARED_SECRET}
+
+      GITHUB_AUTH_MODE: ${GITHUB_AUTH_MODE:-app}
+      GITHUB_APP_ID: ${GITHUB_APP_ID:-}
+      GITHUB_APP_PRIVATE_KEY_BASE64: ${GITHUB_APP_PRIVATE_KEY_BASE64:-}
+      GITHUB_APP_PRIVATE_KEY: ${GITHUB_APP_PRIVATE_KEY:-}
+      ACCESS_TOKEN: ${ACCESS_TOKEN:-}
+
+      GITHUB_ORGS: ${GITHUB_ORGS:-auto}
+      GITHUB_ORG_INCLUDE: ${GITHUB_ORG_INCLUDE:-}
+      GITHUB_ORG_EXCLUDE: ${GITHUB_ORG_EXCLUDE:-}
+      GITHUB_PERSONAL_REPOS: ${GITHUB_PERSONAL_REPOS:-auto}
+      GITHUB_PERSONAL_REPO_INCLUDE: ${GITHUB_PERSONAL_REPO_INCLUDE:-}
+      GITHUB_PERSONAL_REPO_EXCLUDE: ${GITHUB_PERSONAL_REPO_EXCLUDE:-}
+      GITHUB_PERSONAL_INCLUDE_ARCHIVED: ${GITHUB_PERSONAL_INCLUDE_ARCHIVED:-false}
 
       NODE_ID: ${NODE_ID}
       NODE_NAME: ${NODE_NAME:-Remote GitHub Builder}
