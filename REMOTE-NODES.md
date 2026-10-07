@@ -72,6 +72,13 @@ GITHUB_ORGS=auto
 
 GITHUB_ORG_INCLUDE=
 GITHUB_ORG_EXCLUDE=
+
+# Also discover repositories owned by your personal GitHub account.
+GITHUB_PERSONAL_REPOS=auto
+GITHUB_PERSONAL_REPO_INCLUDE=
+GITHUB_PERSONAL_REPO_EXCLUDE=
+GITHUB_PERSONAL_INCLUDE_ARCHIVED=false
+
 RUNNER_NAME_PREFIX=uk-vps-02
 
 CENTRAL_DASHBOARD_URL=https://runner-dashboard.example.com
