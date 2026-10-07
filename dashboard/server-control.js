@@ -12,6 +12,18 @@ const SESSION_SECRET = process.env.DASHBOARD_SESSION_SECRET || '';
 const NODE_SHARED_SECRET = process.env.DASHBOARD_NODE_SHARED_SECRET || '';
 const GITHUB_ORG = String(process.env.GITHUB_ORG || '').trim();
 const GITHUB_TOKEN = process.env.GITHUB_DASHBOARD_TOKEN || process.env.ACCESS_TOKEN || '';
+const GITHUB_FLEET_TOKEN = process.env.ACCESS_TOKEN || process.env.GITHUB_DASHBOARD_TOKEN || '';
+const GITHUB_AUTH_MODE = String(process.env.GITHUB_AUTH_MODE || (GITHUB_FLEET_TOKEN ? 'token' : 'app')).trim().toLowerCase();
+const GITHUB_APP_ID = String(process.env.GITHUB_APP_ID || '').trim();
+const GITHUB_APP_PRIVATE_KEY_RAW = String(process.env.GITHUB_APP_PRIVATE_KEY || '');
+const GITHUB_APP_PRIVATE_KEY_BASE64 = String(process.env.GITHUB_APP_PRIVATE_KEY_BASE64 || '').trim();
+const GITHUB_ORGS = String(process.env.GITHUB_ORGS || 'auto').trim();
+const GITHUB_ORG_INCLUDE = String(process.env.GITHUB_ORG_INCLUDE || '').trim();
+const GITHUB_ORG_EXCLUDE = String(process.env.GITHUB_ORG_EXCLUDE || '').trim();
+const GITHUB_PERSONAL_REPOS = String(process.env.GITHUB_PERSONAL_REPOS || 'auto').trim();
+const GITHUB_PERSONAL_REPO_INCLUDE = String(process.env.GITHUB_PERSONAL_REPO_INCLUDE || '').trim();
+const GITHUB_PERSONAL_REPO_EXCLUDE = String(process.env.GITHUB_PERSONAL_REPO_EXCLUDE || '').trim();
+const GITHUB_PERSONAL_INCLUDE_ARCHIVED = /^(1|true|yes|on)$/i.test(String(process.env.GITHUB_PERSONAL_INCLUDE_ARCHIVED || 'false'));
 const NODE_OFFLINE_SECONDS = Math.max(15, Math.min(Number(process.env.DASHBOARD_NODE_OFFLINE_SECONDS || 45), 3600));
 const API_VERSION = '2022-11-28';
 const authConfigured = Boolean(LOGIN_USER && (LOGIN_PASS || LOGIN_PASS_SHA256));
@@ -41,6 +53,58 @@ function safeRepo(v){const s=String(v||'').trim();if(!/^[A-Za-z0-9_.-]{1,100}$/.
 function safeRunId(v){const s=String(v||'').trim();if(!/^\d{1,24}$/.test(s))throw new Error('Invalid workflow run id');return s}
 function controlForRunner(name){const row=db.prepare('SELECT node_id,runner_name,desired_state,pending_action,updated_at FROM runner_controls WHERE runner_name=?').get(String(name||''));return row||{node_id:null,runner_name:String(name||''),desired_state:'running',pending_action:null,updated_at:null}}
 function controls(){return db.prepare(`SELECT c.node_id,c.runner_name,c.desired_state,c.pending_action,c.updated_at,n.name AS node_name,n.last_seen FROM runner_controls c LEFT JOIN nodes n ON n.id=c.node_id ORDER BY c.runner_name COLLATE NOCASE`).all()}
+
+function appPrivateKey(){
+  if(GITHUB_APP_PRIVATE_KEY_BASE64)return Buffer.from(GITHUB_APP_PRIVATE_KEY_BASE64,'base64').toString('utf8');
+  return GITHUB_APP_PRIVATE_KEY_RAW.replace(/\\n/g,'\n').trim();
+}
+function createAppJwt(){
+  const key=appPrivateKey();
+  if(!GITHUB_APP_ID||!key)throw Object.assign(new Error('GitHub App credentials are not configured on the dashboard'),{status:503});
+  const now=Math.floor(Date.now()/1000);
+  const header=Buffer.from(JSON.stringify({alg:'RS256',typ:'JWT'})).toString('base64url');
+  const payload=Buffer.from(JSON.stringify({iat:now-60,exp:now+540,iss:GITHUB_APP_ID})).toString('base64url');
+  const input=`${header}.${payload}`;
+  const signature=crypto.sign('RSA-SHA256',Buffer.from(input),key).toString('base64url');
+  return {token:`${input}.${signature}`,expires_at:new Date((now+540)*1000).toISOString()};
+}
+function githubCredentialLease(){
+  if(GITHUB_AUTH_MODE==='app'){
+    const jwt=createAppJwt();
+    return {
+      mode:'app',
+      token:jwt.token,
+      expires_at:jwt.expires_at,
+      policy:{
+        orgs:GITHUB_ORGS,
+        org_include:GITHUB_ORG_INCLUDE,
+        org_exclude:GITHUB_ORG_EXCLUDE,
+        personal_repos:GITHUB_PERSONAL_REPOS,
+        personal_repo_include:GITHUB_PERSONAL_REPO_INCLUDE,
+        personal_repo_exclude:GITHUB_PERSONAL_REPO_EXCLUDE,
+        personal_include_archived:GITHUB_PERSONAL_INCLUDE_ARCHIVED,
+      },
+    };
+  }
+  if(GITHUB_AUTH_MODE==='token'){
+    if(!GITHUB_FLEET_TOKEN)throw Object.assign(new Error('GitHub PAT/token is not configured on the dashboard'),{status:503});
+    return {
+      mode:'token',
+      token:GITHUB_FLEET_TOKEN,
+      expires_at:null,
+      policy:{
+        orgs:GITHUB_ORGS,
+        org_include:GITHUB_ORG_INCLUDE,
+        org_exclude:GITHUB_ORG_EXCLUDE,
+        personal_repos:GITHUB_PERSONAL_REPOS,
+        personal_repo_include:GITHUB_PERSONAL_REPO_INCLUDE,
+        personal_repo_exclude:GITHUB_PERSONAL_REPO_EXCLUDE,
+        personal_include_archived:GITHUB_PERSONAL_INCLUDE_ARCHIVED,
+      },
+    };
+  }
+  throw Object.assign(new Error('GITHUB_AUTH_MODE must be app or token'),{status:503});
+}
 
 async function githubWorkflowAction(repo,runId,action){
   if(!GITHUB_ORG||!GITHUB_TOKEN)throw Object.assign(new Error('Dashboard GitHub token is not configured'),{status:503});
@@ -121,6 +185,10 @@ http.createServer=function controlCreateServer(listener){
         const body=await readJson(req),nodeId=safeId(body.node_id);
         return json(res,200,deleteOfflineNode(nodeId));
       }
+      if(p==='/internal/github/lease'&&req.method==='GET'){
+        if(!nodeAuthorized(req))return json(res,401,{error:'Invalid node token'});
+        return json(res,200,githubCredentialLease());
+      }
       if(p==='/internal/nodes/runner-control'&&req.method==='GET'){
         if(!nodeAuthorized(req))return json(res,401,{error:'Invalid node token'});
         return json(res,200,controlForRunner(url.searchParams.get('name')));
@@ -138,6 +206,7 @@ http.createServer=function controlCreateServer(listener){
 
 for(const signal of ['SIGTERM','SIGINT','SIGHUP'])process.once(signal,()=>{try{db.close()}catch{}});
 console.log('Runner control API: enabled');
+console.log(`GitHub credential lease: ${GITHUB_AUTH_MODE} mode; runner lifecycle remains agent-owned`);
 console.log('Workflow actions: cancel / force-cancel / rerun enabled');
 console.log(`Offline node deletion: enabled after ${NODE_OFFLINE_SECONDS}s offline`);
 require('./server-realtime.js');
