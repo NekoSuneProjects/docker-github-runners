@@ -83,10 +83,10 @@ RUN set -eux; \
     sudo rm -rf /var/lib/apt/lists/*
 
 COPY --chown=runner:runner start.sh /actions-runner/start.sh
-COPY --chown=runner:runner runner-job-started.sh /actions-runner/hooks/job-started.sh
-COPY --chown=runner:runner runner-job-completed.sh /actions-runner/hooks/job-completed.sh
+COPY --chown=runner:runner runner-job-started.sh /opt/neko-runner-hooks/job-started.sh
+COPY --chown=runner:runner runner-job-completed.sh /opt/neko-runner-hooks/job-completed.sh
 COPY --chown=root:root runner-dashboard-entrypoint.sh /runner-dashboard-entrypoint.sh
-RUN chmod +x /actions-runner/start.sh /actions-runner/hooks/job-started.sh /actions-runner/hooks/job-completed.sh \
+RUN chmod +x /actions-runner/start.sh /opt/neko-runner-hooks/job-started.sh /opt/neko-runner-hooks/job-completed.sh \
     && sudo chmod +x /runner-dashboard-entrypoint.sh
 
 WORKDIR /actions-runner
