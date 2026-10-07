@@ -2,25 +2,12 @@
 
 const fs = require('fs');
 const os = require('os');
-const crypto = require('crypto');
 const { spawn, execFile } = require('child_process');
 
 const DASHBOARD_URL = String(process.env.DASHBOARD_URL || '').replace(/\/+$/, '');
 const NODE_TOKEN = String(process.env.DASHBOARD_NODE_SHARED_SECRET || '');
 
-const GITHUB_AUTH_MODE = String(process.env.GITHUB_AUTH_MODE || 'app').trim().toLowerCase();
-const GITHUB_TOKEN = String(process.env.ACCESS_TOKEN || '').trim();
-const GITHUB_APP_ID = String(process.env.GITHUB_APP_ID || '').trim();
-const GITHUB_APP_PRIVATE_KEY_RAW = String(process.env.GITHUB_APP_PRIVATE_KEY || '');
-const GITHUB_APP_PRIVATE_KEY_BASE64 = String(process.env.GITHUB_APP_PRIVATE_KEY_BASE64 || '').trim();
-const GITHUB_ORGS = String(process.env.GITHUB_ORGS || 'auto').trim();
-const GITHUB_ORG_INCLUDE = csv(process.env.GITHUB_ORG_INCLUDE);
-const GITHUB_ORG_EXCLUDE = new Set(csv(process.env.GITHUB_ORG_EXCLUDE).map(v => v.toLowerCase()));
-const GITHUB_PERSONAL_REPOS = String(process.env.GITHUB_PERSONAL_REPOS || 'auto').trim();
-const GITHUB_PERSONAL_REPO_INCLUDE = csv(process.env.GITHUB_PERSONAL_REPO_INCLUDE);
-const GITHUB_PERSONAL_REPO_EXCLUDE = new Set(csv(process.env.GITHUB_PERSONAL_REPO_EXCLUDE).map(v => v.toLowerCase()));
-const GITHUB_PERSONAL_INCLUDE_ARCHIVED = /^(1|true|yes|on)$/i.test(String(process.env.GITHUB_PERSONAL_INCLUDE_ARCHIVED || 'false'));
-
+let credentialLease = null;
 const NODE_ID = safe(process.env.NODE_ID || 'node');
 const PREFIX = safe(process.env.RUNNER_NAME_PREFIX || process.env.RUNNER_NAME || NODE_ID || 'neko-runner');
 const RUNNER_IMAGE = String(process.env.RUNNER_IMAGE || 'ghcr.io/nekosuneprojects/docker-github-runners:latest');
@@ -76,36 +63,48 @@ function exec(command, args, timeout = 120000) {
   });
 }
 
-function appPrivateKey() {
-  if (GITHUB_APP_PRIVATE_KEY_BASE64) return Buffer.from(GITHUB_APP_PRIVATE_KEY_BASE64, 'base64').toString('utf8');
-  return GITHUB_APP_PRIVATE_KEY_RAW.replace(/\\n/g, '\n').trim();
+async function getCredentialLease(force = false) {
+  const now = Date.now();
+  if (!force && credentialLease) {
+    const expires = credentialLease.expires_at ? Date.parse(credentialLease.expires_at) : Number.POSITIVE_INFINITY;
+    if (!Number.isFinite(expires) || expires - now > 60000) return credentialLease;
+  }
+
+  const r = await fetch(`${DASHBOARD_URL}/internal/github/lease`, {
+    headers: {
+      Authorization: `Bearer ${NODE_TOKEN}`,
+      Accept: 'application/json',
+      'User-Agent': 'neko-runner-agent/3.1',
+    },
+  });
+  const raw = await r.text();
+  let data = {};
+  try { data = raw ? JSON.parse(raw) : {}; } catch {}
+  if (!r.ok) throw new Error(`dashboard credential lease ${r.status}: ${data.error || raw.slice(0, 500) || r.statusText}`);
+  if (!['app','token'].includes(data.mode) || !data.token) throw new Error('dashboard returned an invalid GitHub credential lease');
+  credentialLease = data;
+  return credentialLease;
 }
-function createAppJwt() {
-  const key = appPrivateKey();
-  if (!GITHUB_APP_ID || !key) throw new Error('GitHub App credentials are not configured on this agent');
-  const now = Math.floor(Date.now() / 1000);
-  const header = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString('base64url');
-  const payload = Buffer.from(JSON.stringify({ iat: now - 60, exp: now + 540, iss: GITHUB_APP_ID })).toString('base64url');
-  const input = `${header}.${payload}`;
-  const signature = crypto.sign('RSA-SHA256', Buffer.from(input), key).toString('base64url');
-  return `${input}.${signature}`;
-}
+
 async function githubFetch(apiPath, options = {}) {
-  const token = options.token || (GITHUB_AUTH_MODE === 'app' ? createAppJwt() : GITHUB_TOKEN);
-  if (!token) throw new Error('GitHub credentials are not configured on this agent');
+  const lease = await getCredentialLease();
+  const token = options.token || lease.token;
   const r = await fetch(`https://api.github.com${apiPath}`, {
     method: options.method || 'GET',
     headers: {
       Authorization: `Bearer ${token}`,
       Accept: 'application/vnd.github+json',
       'X-GitHub-Api-Version': API_VERSION,
-      'User-Agent': 'neko-runner-agent/3.0',
+      'User-Agent': 'neko-runner-agent/3.1',
       ...(options.body ? { 'Content-Type': 'application/json' } : {}),
     },
     body: options.body ? JSON.stringify(options.body) : undefined,
   });
   const raw = await r.text();
-  if (!r.ok) throw new Error(`GitHub API ${r.status}: ${raw.slice(0, 500) || r.statusText}`);
+  if (!r.ok) {
+    if (r.status === 401 && !options.token) credentialLease = null;
+    throw new Error(`GitHub API ${r.status}: ${raw.slice(0, 500) || r.statusText}`);
+  }
   if (r.status === 204 || !raw) return {};
   return JSON.parse(raw);
 }
@@ -144,7 +143,8 @@ async function installationTokenById(id) {
   return data.token;
 }
 async function tokenForTarget(target) {
-  if (GITHUB_AUTH_MODE !== 'app') return GITHUB_TOKEN;
+  const lease = await getCredentialLease();
+  if (lease.mode !== 'app') return lease.token;
   return installationTokenById(await installationIdForTarget(target));
 }
 function targetApiBase(target) {
@@ -154,6 +154,16 @@ function targetApiBase(target) {
 }
 async function discoverTargets() {
   const targets = [];
+  const lease = await getCredentialLease();
+  const policy = lease.policy || {};
+  const GITHUB_AUTH_MODE = lease.mode;
+  const GITHUB_ORGS = String(policy.orgs || 'auto').trim();
+  const GITHUB_ORG_INCLUDE = csv(policy.org_include);
+  const GITHUB_ORG_EXCLUDE = new Set(csv(policy.org_exclude).map(v => v.toLowerCase()));
+  const GITHUB_PERSONAL_REPOS = String(policy.personal_repos || 'auto').trim();
+  const GITHUB_PERSONAL_REPO_INCLUDE = csv(policy.personal_repo_include);
+  const GITHUB_PERSONAL_REPO_EXCLUDE = new Set(csv(policy.personal_repo_exclude).map(v => v.toLowerCase()));
+  const GITHUB_PERSONAL_INCLUDE_ARCHIVED = policy.personal_include_archived === true;
 
   if (GITHUB_ORGS && !/^(none|off|false)$/i.test(GITHUB_ORGS)) {
     let orgs = [];
@@ -496,22 +506,9 @@ if (NODE_TOKEN.length < 32) {
   console.error('ERROR: DASHBOARD_NODE_SHARED_SECRET must be at least 32 characters');
   process.exit(1);
 }
-if (!['app', 'token'].includes(GITHUB_AUTH_MODE)) {
-  console.error('ERROR: GITHUB_AUTH_MODE must be app or token');
-  process.exit(1);
-}
-if (GITHUB_AUTH_MODE === 'app' && (!GITHUB_APP_ID || !appPrivateKey())) {
-  console.error('ERROR: GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY_BASE64 (or GITHUB_APP_PRIVATE_KEY) are required on the agent');
-  process.exit(1);
-}
-if (GITHUB_AUTH_MODE === 'token' && !GITHUB_TOKEN) {
-  console.error('ERROR: ACCESS_TOKEN is required on the agent in token mode');
-  process.exit(1);
-}
-
-console.log(`[fleet] direct GitHub mode enabled for node ${NODE_ID}; GitHub runner lifecycle is owned by this agent`);
-detectCapabilities()
-  .then(capabilities => {
+console.log(`[fleet] dashboard credential-lease mode enabled for node ${NODE_ID}; GitHub runner lifecycle is owned by this agent`);
+Promise.all([getCredentialLease(), detectCapabilities()])
+  .then(([, capabilities]) => {
     process.env.NODE_LABELS = capabilities.labels.join(',');
     console.log(`[fleet] detected node capacity: size=${capabilities.size} cpu=${capabilities.cpu} ram=${capabilities.ram_gb}GB gpu=${capabilities.gpu}; routing labels=${capabilities.labels.join(',')}`);
     startAgent();
