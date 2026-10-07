@@ -91,6 +91,24 @@ NODE_LOCATION=London
 
 `NODE_ID` must be unique for every machine.
 
+Each node can classify itself automatically:
+
+```env
+NODE_CAPACITY_CLASS=auto
+NODE_GPU=auto
+```
+
+The fleet adds routing labels according to the detected host:
+
+```text
+small  -> neko-lite
+medium -> neko-build
+large  -> neko-heavy
+GPU    -> neko-gpu
+```
+
+Use those labels in `runs-on` so lightweight jobs use small nodes and builds/GPU jobs use the appropriate larger hosts. GitHub runner selection happens before the workflow steps execute, so this explicit workload label is required for reliable routing.
+
 Start the remote stack:
 
 ```bash
