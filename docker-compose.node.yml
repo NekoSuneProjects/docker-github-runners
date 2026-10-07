@@ -1,31 +1,10 @@
-# Remote runner node stack. Pulls the published runner + agent images and only
-# connects outbound to the central dashboard.
+# Remote multi-organization runner node.
+#
+# The node-agent discovers/manages one GitHub runner registration per org.
+# Every managed runner shares one physical-node execution lock, so only one
+# workflow job can execute on this machine at a time. Jobs assigned to another
+# org wait in the runner job-start hook until the active job releases the slot.
 services:
-  github-builder:
-    image: ${RUNNER_IMAGE:-ghcr.io/nekosuneprojects/docker-github-runners:latest}
-    env_file:
-      - .env
-    environment:
-      RUNNER_SCOPE: ${RUNNER_SCOPE:-organization}
-      GITHUB_ORG: ${GITHUB_ORG}
-      REPO_URL: ${REPO_URL:-}
-      ACCESS_TOKEN: ${ACCESS_TOKEN}
-      RUNNER_NAME: ${RUNNER_NAME:-neko-remote-builder}
-      LABELS: ${LABELS:-docker,buildx,multiarch,builder}
-      RUNNER_UPDATE_ON_START: ${RUNNER_UPDATE_ON_START:-true}
-      ENABLE_MULTIARCH_ON_START: ${ENABLE_MULTIARCH_ON_START:-true}
-      MULTIARCH_PLATFORMS: ${MULTIARCH_PLATFORMS:-arm64,amd64}
-    labels:
-      neko.runner.managed: "true"
-      neko.runner.name: "${RUNNER_NAME:-neko-remote-builder}"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - runner-work:/work
-      - runner-diag:/actions-runner/_diag
-    init: true
-    stop_grace_period: 30s
-    restart: unless-stopped
-
   node-agent:
     image: ${NODE_AGENT_IMAGE:-ghcr.io/nekosuneprojects/docker-github-runners-node-agent:latest}
     env_file:
@@ -33,43 +12,69 @@ services:
     environment:
       DASHBOARD_URL: ${CENTRAL_DASHBOARD_URL}
       DASHBOARD_NODE_SHARED_SECRET: ${DASHBOARD_NODE_SHARED_SECRET}
+
       NODE_ID: ${NODE_ID}
       NODE_NAME: ${NODE_NAME:-Remote GitHub Builder}
       NODE_LOCATION: ${NODE_LOCATION:-}
-      RUNNER_NAME: ${RUNNER_NAME:-neko-remote-builder}
-      RUNNER_SCOPE: ${RUNNER_SCOPE:-organization}
-      GITHUB_ORG: ${GITHUB_ORG}
-      REPO_URL: ${REPO_URL:-}
+
       ACCESS_TOKEN: ${ACCESS_TOKEN}
+      GITHUB_ORGS: ${GITHUB_ORGS:-auto}
+      GITHUB_ORG_INCLUDE: ${GITHUB_ORG_INCLUDE:-}
+      GITHUB_ORG_EXCLUDE: ${GITHUB_ORG_EXCLUDE:-}
+      GITHUB_PERSONAL_REPOS: ${GITHUB_PERSONAL_REPOS:-auto}
+      GITHUB_PERSONAL_REPO_INCLUDE: ${GITHUB_PERSONAL_REPO_INCLUDE:-}
+      GITHUB_PERSONAL_REPO_EXCLUDE: ${GITHUB_PERSONAL_REPO_EXCLUDE:-}
+      GITHUB_PERSONAL_INCLUDE_ARCHIVED: ${GITHUB_PERSONAL_INCLUDE_ARCHIVED:-false}
+
+      RUNNER_IMAGE: ${RUNNER_IMAGE:-ghcr.io/nekosuneprojects/docker-github-runners:latest}
+      RUNNER_NAME_PREFIX: ${RUNNER_NAME_PREFIX:-${NODE_ID:-neko-node}}
+      LABELS: ${LABELS:-docker,buildx,multiarch,builder}
+      RUNNER_UPDATE_ON_START: ${RUNNER_UPDATE_ON_START:-true}
+      ENABLE_MULTIARCH_ON_START: ${ENABLE_MULTIARCH_ON_START:-true}
+      MULTIARCH_PLATFORMS: ${MULTIARCH_PLATFORMS:-arm64,amd64}
+
+      NODE_RUNNER_WORK_VOLUME: ${NODE_ID:-neko-node}-runner-work
+      NODE_RUNNER_DIAG_VOLUME: ${NODE_ID:-neko-node}-runner-diag
+      NODE_RUNNER_LOCK_VOLUME: ${NODE_ID:-neko-node}-runner-lock
+      NODE_SHARED_LOCK_STALE_SECONDS: ${NODE_SHARED_LOCK_STALE_SECONDS:-259200}
+      NODE_FLEET_RECONCILE_SECONDS: ${NODE_FLEET_RECONCILE_SECONDS:-120}
+
+      # Dashboard heartbeat compatibility. Fleet mode reports the physical node;
+      # individual org/repository runner state remains available through GitHub.
+      RUNNER_NAME: ${RUNNER_NAME_PREFIX:-${NODE_ID:-neko-node}}
+      RUNNER_SCOPE: organization
+      GITHUB_ORG: ""
+
       NODE_LABELS: ${LABELS:-docker,buildx,multiarch,builder}
       NODE_HEARTBEAT_SECONDS: ${NODE_HEARTBEAT_SECONDS:-10}
       NODE_LOG_TAIL_BYTES: ${NODE_LOG_TAIL_BYTES:-131072}
       NODE_RUNNER_STATUS_CACHE_SECONDS: ${NODE_RUNNER_STATUS_CACHE_SECONDS:-90}
       RUNNER_DIAG_DIR: /runner-diag
       RUNNER_WORK_DIR: /runner-work
+      NODE_SHARED_LOCK_DIR: /runner-lock
       NODE_HOST_ROOT: /host
+
       NODE_STUCK_WATCHDOG_ENABLED: ${NODE_STUCK_WATCHDOG_ENABLED:-true}
       NODE_STUCK_THRESHOLD_SECONDS: ${NODE_STUCK_THRESHOLD_SECONDS:-600}
       NODE_AUTO_RECOVER_STUCK: ${NODE_AUTO_RECOVER_STUCK:-false}
       NODE_STUCK_RECOVERY_COOLDOWN_SECONDS: ${NODE_STUCK_RECOVERY_COOLDOWN_SECONDS:-900}
-      NODE_AUTO_RECOVER_OFFLINE: ${NODE_AUTO_RECOVER_OFFLINE:-true}
-      NODE_RUNNER_HEALTHCHECK_SECONDS: ${NODE_RUNNER_HEALTHCHECK_SECONDS:-30}
-      NODE_RUNNER_OFFLINE_RECOVERY_SECONDS: ${NODE_RUNNER_OFFLINE_RECOVERY_SECONDS:-120}
-      NODE_RUNNER_OFFLINE_RECOVERY_COOLDOWN_SECONDS: ${NODE_RUNNER_OFFLINE_RECOVERY_COOLDOWN_SECONDS:-600}
-      NODE_RUNNER_CONTAINER_LABEL: neko.runner.managed=true
+
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - runner-diag:/runner-diag
       - runner-work:/runner-work:ro
+      - runner-lock:/runner-lock
       - /etc/hostname:/host/etc/hostname:ro
       - /etc/os-release:/host/etc/os-release:ro
       - /proc:/host/proc:ro
-    depends_on:
-      - github-builder
     init: true
-    stop_grace_period: 5s
+    stop_grace_period: 35s
     restart: unless-stopped
 
 volumes:
   runner-work:
+    name: "${NODE_ID:-neko-node}-runner-work"
   runner-diag:
+    name: "${NODE_ID:-neko-node}-runner-diag"
+  runner-lock:
+    name: "${NODE_ID:-neko-node}-runner-lock"

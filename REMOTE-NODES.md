@@ -62,9 +62,24 @@ cp .env.node.example .env
 Set:
 
 ```env
-GITHUB_ORG=YOUR_GITHUB_ORG
 ACCESS_TOKEN=github_pat_...
-RUNNER_NAME=uk-vps-02-runner
+
+# Discover every active org where this account is an org admin.
+GITHUB_ORGS=auto
+
+# Or set an explicit list:
+# GITHUB_ORGS=NekoSuneProjects,NekoSuneProjectsForks,AnotherOrg
+
+GITHUB_ORG_INCLUDE=
+GITHUB_ORG_EXCLUDE=
+
+# Also discover repositories owned by your personal GitHub account.
+GITHUB_PERSONAL_REPOS=auto
+GITHUB_PERSONAL_REPO_INCLUDE=
+GITHUB_PERSONAL_REPO_EXCLUDE=
+GITHUB_PERSONAL_INCLUDE_ARCHIVED=false
+
+RUNNER_NAME_PREFIX=uk-vps-02
 
 CENTRAL_DASHBOARD_URL=https://runner-dashboard.example.com
 DASHBOARD_NODE_SHARED_SECRET=THE_SAME_SECRET_AS_THE_CENTRAL_DASHBOARD
@@ -102,7 +117,7 @@ The node agent authenticates with `DASHBOARD_NODE_SHARED_SECRET`. This is separa
 
 The agent does not need the dashboard login password and does not receive the dashboard's GitHub token.
 
-The node agent does **not** mount the Docker socket. It only receives read-only mounts for runner diagnostics and host information (`/proc`, `/etc/hostname`, and `/etc/os-release`).
+The node agent mounts the Docker socket because fleet mode creates, starts, repairs, and removes the per-organization runner containers. Treat the node-agent as host-privileged infrastructure and only use trusted runner images/workflows.
 
 ## Offline detection
 
