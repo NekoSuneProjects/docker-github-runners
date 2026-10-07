@@ -1,13 +1,19 @@
 'use strict';
 
-const fs = require('fs');
 const { spawn, execFile } = require('child_process');
 
 const DASHBOARD_URL = String(process.env.DASHBOARD_URL || '').replace(/\/+$/, '');
 const ACCESS_TOKEN = String(process.env.ACCESS_TOKEN || '');
+
 const RAW_ORGS = String(process.env.GITHUB_ORGS || '').trim();
-const INCLUDE = csv(process.env.GITHUB_ORG_INCLUDE);
-const EXCLUDE = new Set(csv(process.env.GITHUB_ORG_EXCLUDE).map(v => v.toLowerCase()));
+const ORG_INCLUDE = csv(process.env.GITHUB_ORG_INCLUDE);
+const ORG_EXCLUDE = lowerSet(process.env.GITHUB_ORG_EXCLUDE);
+
+const RAW_PERSONAL_REPOS = String(process.env.GITHUB_PERSONAL_REPOS || '').trim();
+const PERSONAL_INCLUDE = csv(process.env.GITHUB_PERSONAL_REPO_INCLUDE);
+const PERSONAL_EXCLUDE = lowerSet(process.env.GITHUB_PERSONAL_REPO_EXCLUDE);
+const INCLUDE_ARCHIVED = truthy(process.env.GITHUB_PERSONAL_INCLUDE_ARCHIVED || 'false');
+
 const NODE_ID = safe(process.env.NODE_ID || 'node');
 const PREFIX = safe(process.env.RUNNER_NAME_PREFIX || process.env.RUNNER_NAME || NODE_ID || 'neko-runner');
 const RUNNER_IMAGE = String(process.env.RUNNER_IMAGE || 'ghcr.io/nekosuneprojects/docker-github-runners:latest');
@@ -29,8 +35,26 @@ function csv(value) {
   return String(value || '').split(',').map(v => v.trim()).filter(Boolean);
 }
 
+function lowerSet(value) {
+  return new Set(csv(value).map(v => v.toLowerCase()));
+}
+
+function truthy(value) {
+  return /^(1|true|yes|on)$/i.test(String(value || ''));
+}
+
 function safe(value) {
   return String(value || '').trim().replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 70);
+}
+
+function targetKey(target) {
+  return target.scope === 'organization'
+    ? `org:${target.org.toLowerCase()}`
+    : `repo:${target.repo.toLowerCase()}`;
+}
+
+function targetLabel(target) {
+  return target.scope === 'organization' ? target.org : target.repo;
 }
 
 function exec(command, args, timeout = 120000) {
@@ -48,7 +72,7 @@ async function github(pathname) {
       Authorization: `Bearer ${ACCESS_TOKEN}`,
       Accept: 'application/vnd.github+json',
       'X-GitHub-Api-Version': '2022-11-28',
-      'User-Agent': 'neko-multi-org-fleet/1.0',
+      'User-Agent': 'neko-github-runner-fleet/1.1',
     },
   });
   if (!r.ok) throw new Error(`GitHub ${r.status} for ${pathname}: ${(await r.text()).slice(0, 220)}`);
@@ -56,6 +80,8 @@ async function github(pathname) {
 }
 
 async function discoverOrgs() {
+  if (!RAW_ORGS || /^(none|off|false)$/i.test(RAW_ORGS)) return [];
+
   let orgs;
   if (/^(auto|\*)$/i.test(RAW_ORGS)) {
     orgs = [];
@@ -71,11 +97,11 @@ async function discoverOrgs() {
     orgs = csv(RAW_ORGS);
   }
 
-  if (INCLUDE.length) {
-    const allow = new Set(INCLUDE.map(v => v.toLowerCase()));
+  if (ORG_INCLUDE.length) {
+    const allow = new Set(ORG_INCLUDE.map(v => v.toLowerCase()));
     orgs = orgs.filter(v => allow.has(v.toLowerCase()));
   }
-  orgs = orgs.filter(v => !EXCLUDE.has(v.toLowerCase()));
+  orgs = orgs.filter(v => !ORG_EXCLUDE.has(v.toLowerCase()));
 
   const seen = new Set();
   return orgs.filter(org => {
@@ -83,19 +109,89 @@ async function discoverOrgs() {
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
+  }).map(org => ({ scope: 'organization', org }));
+}
+
+async function discoverPersonalRepos() {
+  if (!RAW_PERSONAL_REPOS || /^(none|off|false)$/i.test(RAW_PERSONAL_REPOS)) return [];
+
+  let repos = [];
+  if (/^(auto|\*)$/i.test(RAW_PERSONAL_REPOS)) {
+    const me = await github('/user');
+    const login = String(me?.login || '').trim();
+    if (!login) throw new Error('GitHub /user did not return a login for personal repository discovery');
+
+    for (let page = 1; page <= 20; page++) {
+      const rows = await github(`/user/repos?affiliation=owner&visibility=all&sort=full_name&direction=asc&per_page=100&page=${page}`);
+      if (!Array.isArray(rows) || !rows.length) break;
+
+      for (const row of rows) {
+        const fullName = String(row?.full_name || '').trim();
+        const owner = String(row?.owner?.login || '').trim();
+        if (!fullName || owner.toLowerCase() !== login.toLowerCase()) continue;
+        if (!INCLUDE_ARCHIVED && row?.archived === true) continue;
+        repos.push(fullName);
+      }
+
+      if (rows.length < 100) break;
+    }
+  } else {
+    repos = csv(RAW_PERSONAL_REPOS).map(value => {
+      const trimmed = value.replace(/^https:\/\/github\.com\//i, '').replace(/\.git$/i, '');
+      return trimmed;
+    });
+  }
+
+  if (PERSONAL_INCLUDE.length) {
+    const allow = new Set(PERSONAL_INCLUDE.map(v => v.toLowerCase()));
+    repos = repos.filter(full => {
+      const short = full.split('/').pop().toLowerCase();
+      return allow.has(full.toLowerCase()) || allow.has(short);
+    });
+  }
+
+  repos = repos.filter(full => {
+    const short = full.split('/').pop().toLowerCase();
+    return !PERSONAL_EXCLUDE.has(full.toLowerCase()) && !PERSONAL_EXCLUDE.has(short);
   });
+
+  const seen = new Set();
+  return repos.filter(repo => {
+    const key = repo.toLowerCase();
+    if (!repo.includes('/') || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).map(repo => ({ scope: 'repository', repo }));
 }
 
-function runnerName(org) {
-  return `${PREFIX}-${safe(org)}`.slice(0, 64);
+async function discoverTargets() {
+  const [orgTargets, personalTargets] = await Promise.all([
+    discoverOrgs(),
+    discoverPersonalRepos(),
+  ]);
+  return [...orgTargets, ...personalTargets];
 }
 
-function containerName(org) {
-  return `neko-runner-${NODE_ID}-${safe(org)}`.toLowerCase().slice(0, 120);
+function runnerName(target) {
+  const suffix = target.scope === 'organization'
+    ? `org-${safe(target.org)}`
+    : `repo-${safe(target.repo.replace('/', '-'))}`;
+  return `${PREFIX}-${suffix}`.slice(0, 64);
 }
 
-async function findContainer(org) {
-  const out = await exec('docker', ['ps', '-aq', '--filter', `label=neko.runner.node=${NODE_ID}`, '--filter', `label=neko.runner.org=${org}`], 15000);
+function containerName(target) {
+  const suffix = target.scope === 'organization'
+    ? `org-${safe(target.org)}`
+    : `repo-${safe(target.repo.replace('/', '-'))}`;
+  return `neko-runner-${NODE_ID}-${suffix}`.toLowerCase().slice(0, 120);
+}
+
+async function findContainer(target) {
+  const out = await exec('docker', [
+    'ps', '-aq',
+    '--filter', `label=neko.runner.node=${NODE_ID}`,
+    '--filter', `label=neko.runner.target=${targetKey(target)}`,
+  ], 15000);
   return out.trim().split('\n').filter(Boolean)[0] || '';
 }
 
@@ -116,19 +212,19 @@ async function ensureVolume(name) {
   }
 }
 
-async function ensureRunner(org) {
-  let id = await findContainer(org);
+async function ensureRunner(target) {
+  let id = await findContainer(target);
   if (id) {
     if (!(await isRunning(id))) {
-      console.log(`[fleet] starting ${org} runner ${id}`);
+      console.log(`[fleet] starting ${targetKey(target)} runner ${id}`);
       await exec('docker', ['start', id], 60000);
     }
     return;
   }
 
-  const name = runnerName(org);
-  const cname = containerName(org);
-  console.log(`[fleet] creating runner for ${org}: ${name}`);
+  const name = runnerName(target);
+  const cname = containerName(target);
+  console.log(`[fleet] creating runner for ${targetKey(target)}: ${name}`);
 
   const args = [
     'run', '-d',
@@ -136,10 +232,10 @@ async function ensureRunner(org) {
     '--restart', 'unless-stopped',
     '--label', 'neko.runner.managed=true',
     '--label', `neko.runner.node=${NODE_ID}`,
-    '--label', `neko.runner.org=${org}`,
+    '--label', `neko.runner.target=${targetKey(target)}`,
+    '--label', `neko.runner.scope=${target.scope}`,
     '--label', `neko.runner.name=${name}`,
-    '-e', 'RUNNER_SCOPE=organization',
-    '-e', `GITHUB_ORG=${org}`,
+    '-e', `RUNNER_SCOPE=${target.scope}`,
     '-e', `ACCESS_TOKEN=${ACCESS_TOKEN}`,
     '-e', `RUNNER_NAME=${name}`,
     '-e', `LABELS=${LABELS}`,
@@ -153,43 +249,64 @@ async function ensureRunner(org) {
     '-v', `${WORK_VOLUME}:/work`,
     '-v', `${DIAG_VOLUME}:/actions-runner/_diag`,
     '-v', `${LOCK_VOLUME}:/runner-lock`,
-    RUNNER_IMAGE,
   ];
 
+  if (target.scope === 'organization') {
+    args.push('-e', `GITHUB_ORG=${target.org}`);
+  } else {
+    args.push('-e', `REPO_URL=https://github.com/${target.repo}`);
+  }
+
+  args.push(RUNNER_IMAGE);
   await exec('docker', args, 120000);
 }
 
 async function removeUnknownRunners(desired) {
-  const out = await exec('docker', ['ps', '-a', '--format', '{{.ID}} {{.Label "neko.runner.org"}}', '--filter', `label=neko.runner.node=${NODE_ID}`], 15000);
+  const out = await exec('docker', [
+    'ps', '-a',
+    '--format', '{{.ID}} {{.Label "neko.runner.target"}}',
+    '--filter', `label=neko.runner.node=${NODE_ID}`,
+  ], 15000);
+
   for (const line of out.split('\n').filter(Boolean)) {
     const firstSpace = line.indexOf(' ');
     const id = firstSpace < 0 ? line : line.slice(0, firstSpace);
-    const org = firstSpace < 0 ? '' : line.slice(firstSpace + 1).trim();
-    if (!org || desired.has(org.toLowerCase())) continue;
-    console.log(`[fleet] removing runner for no-longer-managed org ${org}`);
-    await exec('docker', ['rm', '-f', id], 60000).catch(err => console.error(`[fleet] remove ${org}: ${err.output || err.message}`));
+    const target = firstSpace < 0 ? '' : line.slice(firstSpace + 1).trim().toLowerCase();
+    if (!target || desired.has(target)) continue;
+    console.log(`[fleet] removing runner for no-longer-managed target ${target}`);
+    await exec('docker', ['rm', '-f', id], 60000)
+      .catch(err => console.error(`[fleet] remove ${target}: ${err.output || err.message}`));
   }
 }
 
 async function reconcile() {
   if (stopping) return;
   try {
-    const orgs = await discoverOrgs();
-    if (!orgs.length) throw new Error('No GitHub organizations resolved. Set GITHUB_ORGS=auto or a comma-separated list.');
+    const targets = await discoverTargets();
+    if (!targets.length) {
+      throw new Error('No GitHub targets resolved. Configure GITHUB_ORGS and/or GITHUB_PERSONAL_REPOS.');
+    }
 
-    await Promise.all([ensureVolume(WORK_VOLUME), ensureVolume(DIAG_VOLUME), ensureVolume(LOCK_VOLUME)]);
-    const desired = new Set(orgs.map(v => v.toLowerCase()));
+    await Promise.all([
+      ensureVolume(WORK_VOLUME),
+      ensureVolume(DIAG_VOLUME),
+      ensureVolume(LOCK_VOLUME),
+    ]);
+
+    const desired = new Set(targets.map(targetKey));
     await removeUnknownRunners(desired);
 
-    for (const org of orgs) {
+    for (const target of targets) {
       try {
-        await ensureRunner(org);
+        await ensureRunner(target);
       } catch (err) {
-        console.error(`[fleet] ${org}: ${err.output || err.message}`);
+        console.error(`[fleet] ${targetKey(target)}: ${err.output || err.message}`);
       }
     }
 
-    console.log(`[fleet] reconciled ${orgs.length} org(s): ${orgs.join(', ')}; shared concurrency=1`);
+    const orgCount = targets.filter(v => v.scope === 'organization').length;
+    const repoCount = targets.filter(v => v.scope === 'repository').length;
+    console.log(`[fleet] reconciled ${targets.length} target(s): ${orgCount} org(s), ${repoCount} personal repo(s); shared concurrency=1`);
   } catch (err) {
     console.error(`[fleet] reconcile failed: ${err.output || err.message}`);
   } finally {
@@ -203,6 +320,7 @@ function startAgent() {
     ...process.env,
     RUNNER_NAME: process.env.RUNNER_NAME || PREFIX,
     GITHUB_ORG: '',
+    REPO_URL: '',
     RUNNER_SCOPE: 'organization',
   };
   child = spawn(process.execPath, ['/app/agent.js'], { stdio: 'inherit', env });
@@ -219,7 +337,9 @@ async function stopFleet() {
   try {
     const out = await exec('docker', ['ps', '-q', '--filter', `label=neko.runner.node=${NODE_ID}`], 15000);
     const ids = out.trim().split('\n').filter(Boolean);
-    for (const id of ids) await exec('docker', ['stop', '-t', '30', id], 60000).catch(() => {});
+    for (const id of ids) {
+      await exec('docker', ['stop', '-t', '30', id], 60000).catch(() => {});
+    }
   } catch {}
 }
 
@@ -233,11 +353,13 @@ function stop(signal) {
 }
 
 if (!ACCESS_TOKEN) {
-  console.error('ERROR: ACCESS_TOKEN is required for multi-org fleet mode');
+  console.error('ERROR: ACCESS_TOKEN is required for GitHub runner fleet mode');
   process.exit(1);
 }
 
-console.log(`[fleet] multi-org mode enabled for node ${NODE_ID}; orgs=${RAW_ORGS || '(none)'}; one shared job slot`);
+console.log(
+  `[fleet] mode enabled for node ${NODE_ID}; orgs=${RAW_ORGS || 'off'}; personal-repos=${RAW_PERSONAL_REPOS || 'off'}; one shared job slot`,
+);
 startAgent();
 reconcile();
 process.once('SIGTERM', () => stop('SIGTERM'));
