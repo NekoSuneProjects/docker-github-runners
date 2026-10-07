@@ -1,0 +1,75 @@
+# Credential-free worker node.
+# GitHub credentials and org/repository selection stay on the dashboard.
+services:
+  node-agent:
+    image: ${NODE_AGENT_IMAGE:-ghcr.io/nekosuneprojects/docker-github-runners-node-agent:latest}
+    build:
+      context: ./node-agent
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      DASHBOARD_URL: ${CENTRAL_DASHBOARD_URL}
+      DASHBOARD_NODE_SHARED_SECRET: ${DASHBOARD_NODE_SHARED_SECRET}
+
+      NODE_ID: ${NODE_ID}
+      NODE_NAME: ${NODE_NAME:-Remote GitHub Builder}
+      NODE_LOCATION: ${NODE_LOCATION:-}
+      NODE_FLEET_MODE: "true"
+
+      RUNNER_IMAGE: ${RUNNER_IMAGE:-ghcr.io/nekosuneprojects/docker-github-runners:latest}
+      RUNNER_NAME_PREFIX: ${RUNNER_NAME_PREFIX:-${NODE_ID:-neko-node}}
+      LABELS: ${LABELS:-docker,buildx,multiarch,builder}
+      RUNNER_UPDATE_ON_START: ${RUNNER_UPDATE_ON_START:-true}
+      ENABLE_MULTIARCH_ON_START: ${ENABLE_MULTIARCH_ON_START:-true}
+      MULTIARCH_PLATFORMS: ${MULTIARCH_PLATFORMS:-arm64,amd64}
+
+      NODE_RUNNER_WORK_VOLUME: ${NODE_ID:-neko-node}-runner-work
+      NODE_RUNNER_DIAG_VOLUME: ${NODE_ID:-neko-node}-runner-diag
+      NODE_RUNNER_LOCK_VOLUME: ${NODE_ID:-neko-node}-runner-lock
+      NODE_SHARED_LOCK_STALE_SECONDS: ${NODE_SHARED_LOCK_STALE_SECONDS:-259200}
+      NODE_FLEET_RECONCILE_SECONDS: ${NODE_FLEET_RECONCILE_SECONDS:-120}
+
+      NODE_CAPACITY_CLASS: ${NODE_CAPACITY_CLASS:-auto}
+      NODE_GPU: ${NODE_GPU:-auto}
+      NODE_SMALL_MAX_CPU: ${NODE_SMALL_MAX_CPU:-2}
+      NODE_SMALL_MAX_RAM_GB: ${NODE_SMALL_MAX_RAM_GB:-4}
+      NODE_LARGE_MIN_CPU: ${NODE_LARGE_MIN_CPU:-8}
+      NODE_LARGE_MIN_RAM_GB: ${NODE_LARGE_MIN_RAM_GB:-16}
+
+      RUNNER_NAME: ${RUNNER_NAME_PREFIX:-${NODE_ID:-neko-node}}
+      RUNNER_SCOPE: organization
+      GITHUB_ORG: ""
+
+      NODE_LABELS: ${LABELS:-docker,buildx,multiarch,builder}
+      NODE_HEARTBEAT_SECONDS: ${NODE_HEARTBEAT_SECONDS:-10}
+      NODE_LOG_TAIL_BYTES: ${NODE_LOG_TAIL_BYTES:-131072}
+      NODE_RUNNER_STATUS_CACHE_SECONDS: ${NODE_RUNNER_STATUS_CACHE_SECONDS:-90}
+      RUNNER_DIAG_DIR: /runner-diag
+      RUNNER_WORK_DIR: /runner-work
+      NODE_SHARED_LOCK_DIR: /runner-lock
+      NODE_HOST_ROOT: /host
+
+      NODE_STUCK_WATCHDOG_ENABLED: ${NODE_STUCK_WATCHDOG_ENABLED:-true}
+      NODE_STUCK_THRESHOLD_SECONDS: ${NODE_STUCK_THRESHOLD_SECONDS:-600}
+      NODE_AUTO_RECOVER_STUCK: ${NODE_AUTO_RECOVER_STUCK:-false}
+      NODE_STUCK_RECOVERY_COOLDOWN_SECONDS: ${NODE_STUCK_RECOVERY_COOLDOWN_SECONDS:-900}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - runner-diag:/runner-diag
+      - runner-work:/runner-work:ro
+      - runner-lock:/runner-lock
+      - /etc/hostname:/host/etc/hostname:ro
+      - /etc/os-release:/host/etc/os-release:ro
+      - /proc:/host/proc:ro
+    init: true
+    stop_grace_period: 35s
+    restart: unless-stopped
+
+volumes:
+  runner-work:
+    name: "${NODE_ID:-neko-node}-runner-work"
+  runner-diag:
+    name: "${NODE_ID:-neko-node}-runner-diag"
+  runner-lock:
+    name: "${NODE_ID:-neko-node}-runner-lock"
