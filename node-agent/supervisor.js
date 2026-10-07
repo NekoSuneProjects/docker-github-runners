@@ -83,7 +83,7 @@ async function ackControl(action) {
 
 async function findRunnerContainer(includeStopped = true) {
   if (RUNNER_CONTAINER_NAME) {
-    const exact = (await exec('docker', [includeStopped ? 'ps' : 'ps', includeStopped ? '-aq' : '-q', '--filter', `name=^/${RUNNER_CONTAINER_NAME}$`], 15000)).trim().split('\n').filter(Boolean)[0];
+    const exact = (await exec('docker', ['ps', includeStopped ? '-aq' : '-q', '--filter', `name=^/${RUNNER_CONTAINER_NAME}$`], 15000)).trim().split('\n').filter(Boolean)[0];
     if (exact) return exact;
   }
   const args = ['ps', includeStopped ? '-aq' : '-q'];

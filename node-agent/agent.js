@@ -8,6 +8,7 @@ const NODE_TOKEN = process.env.DASHBOARD_NODE_SHARED_SECRET || '';
 const INTERVAL_SECONDS = Math.max(10, Math.min(Number(process.env.NODE_HEARTBEAT_SECONDS || 15), 300));
 const LOG_TAIL_BYTES = Math.max(8192, Math.min(Number(process.env.NODE_LOG_TAIL_BYTES || 131072), 524288));
 const DIAG_DIR = process.env.RUNNER_DIAG_DIR || '/runner-diag';
+const SHARED_LOCK_DIR = process.env.NODE_SHARED_LOCK_DIR || '/runner-lock';
 const HOST_ROOT = process.env.NODE_HOST_ROOT || '/host';
 const RUNNER_NAME = process.env.RUNNER_NAME || '';
 const RUNNER_SCOPE = process.env.RUNNER_SCOPE || 'organization';
@@ -26,7 +27,7 @@ const RECOVERY_COOLDOWN_SECONDS = Math.max(300, Math.min(Number(process.env.NODE
 const RUNNER_CONTAINER_NAME = String(process.env.NODE_RUNNER_CONTAINER_NAME || '').trim();
 const RUNNER_CONTAINER_LABEL = String(process.env.NODE_RUNNER_CONTAINER_LABEL || 'neko.runner.managed=true').trim();
 
-const AGENT_VERSION = '2.1.0';
+const AGENT_VERSION = '2.2.0';
 let stopping = false;
 let timer = null;
 let requestController = null;
@@ -35,6 +36,9 @@ let recoveryResult = null;
 let cleaning = false;
 let recovering = false;
 let lastRecoveryAt = 0;
+const RUNNER_STATUS_CACHE_SECONDS = Math.max(30, Math.min(Number(process.env.NODE_RUNNER_STATUS_CACHE_SECONDS || 90), 600));
+let runnerBusyCachedValue = null;
+let runnerBusyCachedAt = 0;
 
 if (!/^https?:\/\//i.test(DASHBOARD_URL)) { console.error('ERROR: DASHBOARD_URL must be http:// or https://'); process.exit(1); }
 if (NODE_TOKEN.length < 32) { console.error('ERROR: DASHBOARD_NODE_SHARED_SECRET must be at least 32 characters'); process.exit(1); }
@@ -52,6 +56,7 @@ function memory() { const text = readText(hostPath('proc/meminfo')), values = {}
 function cpuCount() { const text = readText(hostPath('proc/stat')); const n = text.split('\n').filter(v => /^cpu\d+\s/.test(v)).length; return n || os.cpus().length; }
 function kernel() { return readText(hostPath('proc/sys/kernel/osrelease')) || os.release(); }
 function exec(command, args, timeout = 120000) { return new Promise((resolve, reject) => execFile(command, args, { timeout, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => err ? reject(Object.assign(err, { output: `${stdout || ''}\n${stderr || ''}`.trim() })) : resolve(String(stdout || '') + String(stderr || '')))); }
+function sharedJobLocked() { try { return fs.statSync(path.join(SHARED_LOCK_DIR, 'active')).isDirectory(); } catch { return false; } }
 function parseBytes(text) { const m = String(text || '').trim().match(/^([0-9.]+)\s*([kmgtp]?b)/i); if (!m) return 0; const powers = { b:0,kb:1,mb:2,gb:3,tb:4,pb:5 }; return Number(m[1]) * 1024 ** powers[m[2].toLowerCase()]; }
 
 async function dockerStorage() {
@@ -100,7 +105,7 @@ async function diagStats() {
   } finally { await handle.close(); }
 }
 
-async function runnerBusy() {
+async function runnerBusyFetch() {
   if (!ACCESS_TOKEN || !RUNNER_NAME) return null;
   let endpoint;
   if (/^(organization|org)$/i.test(RUNNER_SCOPE) && GITHUB_ORG) endpoint = `/orgs/${encodeURIComponent(GITHUB_ORG)}/actions/runners?per_page=100`;
@@ -116,6 +121,25 @@ async function runnerBusy() {
     const runner = (data.runners || []).find(v => v.name === RUNNER_NAME);
     return runner ? Boolean(runner.busy) : null;
   } catch { return null; }
+}
+
+async function runnerBusy(force = false) {
+  const age = Date.now() - runnerBusyCachedAt;
+  if (!force && runnerBusyCachedAt && age < RUNNER_STATUS_CACHE_SECONDS * 1000) return runnerBusyCachedValue;
+
+  const value = await runnerBusyFetch();
+
+  // Preserve the last known state through temporary API failures/rate limits.
+  // On the first unknown lookup, keep null rather than incorrectly reporting idle.
+  if (value !== null) {
+    runnerBusyCachedValue = value;
+    runnerBusyCachedAt = Date.now();
+  } else if (!runnerBusyCachedAt) {
+    runnerBusyCachedValue = null;
+    runnerBusyCachedAt = Date.now();
+  }
+
+  return runnerBusyCachedValue;
 }
 
 function watchdogState(busy, diag) {
@@ -162,7 +186,7 @@ async function maybeRecoverStuck(watchdog) {
     // Confirm GitHub still considers this runner busy immediately before we
     // restart anything. This avoids recovering a job that finished between
     // heartbeat collection and watchdog execution.
-    if (await runnerBusy() !== true) return;
+    if (await runnerBusy(true) !== true) return;
 
     const container = await findRunnerContainer();
     if (!container) {
@@ -189,7 +213,7 @@ async function payload() {
   const mem = memory();
   const docker = await dockerStorage();
   const diag = await diagStats();
-  const busy = await runnerBusy();
+  const busy = sharedJobLocked() ? true : await runnerBusy();
   const watchdog = watchdogState(busy, diag);
   const memPct = mem.total ? ((mem.total - mem.free) / mem.total) * 100 : 0;
 
@@ -235,7 +259,7 @@ async function runCleanup(action) {
   if (cleaning || recovering || !action?.id) return;
   cleaning = true;
 
-  if (await runnerBusy() === true) {
+  if (sharedJobLocked() || await runnerBusy(true) === true) {
     console.log(`[cleanup] deferred ${action.id}: runner became busy`);
     cleaning = false;
     return;

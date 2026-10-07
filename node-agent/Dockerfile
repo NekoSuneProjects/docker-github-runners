@@ -5,11 +5,13 @@ RUN apk add --no-cache ca-certificates docker-cli docker-cli-buildx
 WORKDIR /app
 COPY agent.js /app/agent.js
 COPY supervisor.js /app/supervisor.js
+COPY fleet-supervisor.js /app/fleet-supervisor.js
 COPY patch-agent.js /app/patch-agent.js
 COPY workload-proxy.js /app/workload-proxy.js
 
 RUN node --check /app/workload-proxy.js \
     && node --check /app/supervisor.js \
+    && node --check /app/fleet-supervisor.js \
     && node --check /app/patch-agent.js \
     && node /app/patch-agent.js \
     && sed -i '/^[[:space:]]*timer\.unref();[[:space:]]*$/d' /app/agent.js \

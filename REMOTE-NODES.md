@@ -59,15 +59,15 @@ On another AMD64 or ARM64 Linux machine, clone this repository and create its en
 cp .env.node.example .env
 ```
 
-Set:
+Remote nodes are intentionally credential-free. GitHub App/PAT credentials and org/repository selection are configured only on the central dashboard.
+
+Remote node configuration:
 
 ```env
-GITHUB_ORG=YOUR_GITHUB_ORG
-ACCESS_TOKEN=github_pat_...
-RUNNER_NAME=uk-vps-02-runner
-
 CENTRAL_DASHBOARD_URL=https://runner-dashboard.example.com
 DASHBOARD_NODE_SHARED_SECRET=THE_SAME_SECRET_AS_THE_CENTRAL_DASHBOARD
+
+RUNNER_NAME_PREFIX=uk-vps-02
 
 NODE_ID=uk-vps-02
 NODE_NAME=UK Builder 02
@@ -75,6 +75,107 @@ NODE_LOCATION=London
 ```
 
 `NODE_ID` must be unique for every machine.
+
+Each node can classify itself automatically:
+
+```env
+NODE_CAPACITY_CLASS=auto
+NODE_GPU=auto
+```
+
+The fleet adds routing labels according to the detected host:
+
+```text
+small  -> neko-lite
+medium -> neko-build
+large  -> neko-build, neko-heavy
+GPU    -> neko-gpu
+```
+
+Use those labels in `runs-on` so lightweight jobs use small nodes and builds/GPU jobs use the appropriate larger hosts. The node-agent also pushes the current custom label set to GitHub's runner settings on every reconcile, replacing stale custom labels automatically. GitHub runner selection happens before the workflow steps execute, so this explicit workload label is required for reliable routing.
+
+### Verify the labels in GitHub
+
+After the node-agent reconciles, open the runner in:
+
+```text
+GitHub
+→ Settings
+→ Actions
+→ Runners
+→ select the runner
+```
+
+A small node should include:
+
+```text
+neko-any
+neko-size-small
+neko-lite
+```
+
+A medium node should include:
+
+```text
+neko-any
+neko-size-medium
+neko-build
+```
+
+A large node should include:
+
+```text
+neko-any
+neko-size-large
+neko-build
+neko-heavy
+```
+
+GPU-capable nodes additionally include:
+
+```text
+neko-gpu
+```
+
+Base custom labels such as `docker`, `buildx`, `multiarch`, and `builder` are synchronized at the same time.
+
+The synchronization replaces GitHub's complete custom-label set for the runner. This is intentional: if a server is reclassified from large to small, stale labels such as `neko-heavy` are removed automatically.
+
+GitHub's built-in runner labels (`self-hosted`, operating system, and architecture) are not part of this custom-label replacement.
+
+### Workflow examples
+
+Small/light work:
+
+```yaml
+runs-on: [self-hosted, neko-lite]
+```
+
+Normal build work:
+
+```yaml
+runs-on: [self-hosted, neko-build]
+```
+
+Large/heavy work:
+
+```yaml
+runs-on: [self-hosted, neko-heavy]
+```
+
+GPU work:
+
+```yaml
+runs-on: [self-hosted, neko-gpu]
+```
+
+Large GPU work:
+
+```yaml
+runs-on: [self-hosted, neko-heavy, neko-gpu]
+```
+
+Because all organization and personal-repository runners on one physical server still share the node execution lock, these labels control **which physical server GitHub selects**, while the shared lock still limits that server to one active job at a time.
 
 Start the remote stack:
 
@@ -102,7 +203,7 @@ The node agent authenticates with `DASHBOARD_NODE_SHARED_SECRET`. This is separa
 
 The agent does not need the dashboard login password and does not receive the dashboard's GitHub token.
 
-The node agent does **not** mount the Docker socket. It only receives read-only mounts for runner diagnostics and host information (`/proc`, `/etc/hostname`, and `/etc/os-release`).
+The node agent mounts the Docker socket because fleet mode creates, starts, repairs, and removes the per-organization runner containers. Treat the node-agent as host-privileged infrastructure and only use trusted runner images/workflows.
 
 ## Offline detection
 
