@@ -156,6 +156,17 @@ The node-agent maintains one lightweight runner registration per organization, b
 
 Use `GITHUB_ORG_INCLUDE` and `GITHUB_ORG_EXCLUDE` to filter automatic discovery.
 
+Personal accounts are supported too. GitHub does not provide a personal-account-wide self-hosted runner scope, so the fleet discovers repositories owned by the authenticated user and creates a repository-scoped runner for each one:
+
+```env
+GITHUB_PERSONAL_REPOS=auto
+GITHUB_PERSONAL_REPO_INCLUDE=
+GITHUB_PERSONAL_REPO_EXCLUDE=
+GITHUB_PERSONAL_INCLUDE_ARCHIVED=false
+```
+
+Organization runners and personal repository runners all use the same physical-node job lock, so the node still executes only one workflow job at a time regardless of which account owns the repository.
+
 ## Central dashboard
 
 The main Compose stack also contains the private Neko Runner Dashboard.
