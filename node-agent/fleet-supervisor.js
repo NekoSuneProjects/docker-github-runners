@@ -145,7 +145,8 @@ async function installationToken(installationId) {
   const data = await appGithub(`/app/installations/${installationId}/access_tokens`, { method: 'POST' });
   if (!data?.token) throw new Error(`GitHub did not return an installation token for installation ${installationId}`);
 
-  const expiresAt = data.expires_at ? Date.parse(data.expires_at) : Date.now() + 55 * 60 * 1000;
+  const parsedExpiry = data.expires_at ? Date.parse(data.expires_at) : NaN;
+  const expiresAt = Number.isFinite(parsedExpiry) ? parsedExpiry : Date.now() + 55 * 60 * 1000;
   const refreshAt = Math.min(expiresAt - 5 * 60 * 1000, Date.now() + GITHUB_APP_TOKEN_REFRESH_SECONDS * 1000);
   installationTokenCache.set(cacheKey, { token: data.token, expiresAt, refreshAt });
   return data.token;
@@ -621,9 +622,20 @@ function stop(signal) {
   stopFleet().finally(() => setTimeout(() => process.exit(0), 100).unref());
 }
 
+if (!['token', 'app'].includes(AUTH_MODE)) {
+  console.error(`ERROR: unsupported GITHUB_AUTH_MODE=${AUTH_MODE}; use token or app`);
+  process.exit(1);
+}
+
 if (AUTH_MODE === 'app') {
   if (!GITHUB_APP_ID || !appPrivateKey()) {
     console.error('ERROR: GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY (or GITHUB_APP_PRIVATE_KEY_BASE64) are required when GITHUB_AUTH_MODE=app');
+    process.exit(1);
+  }
+  try {
+    createAppJwt();
+  } catch (err) {
+    console.error(`ERROR: GitHub App private key/JWT validation failed: ${err.message}`);
     process.exit(1);
   }
 } else if (!ACCESS_TOKEN) {
