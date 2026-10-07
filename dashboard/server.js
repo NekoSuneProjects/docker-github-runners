@@ -416,7 +416,11 @@ async function cached(key, ttlMs, fn) {
 
 async function githubFetch(apiPath, options = {}) {
   const headers = { Accept: options.accept || 'application/vnd.github+json', 'X-GitHub-Api-Version': API_VERSION, 'User-Agent': 'neko-runner-dashboard/2.0' };
-  if (GITHUB_TOKEN) headers.Authorization = `Bearer ${GITHUB_TOKEN}`;
+  let token = GITHUB_TOKEN;
+  if (!token && GITHUB_AUTH_MODE === 'app' && GITHUB_ORG) {
+    token = await installationTokenForTarget({ scope:'organization', org:GITHUB_ORG });
+  }
+  if (token) headers.Authorization = `Bearer ${token}`;
   const response = await fetch(`https://api.github.com${apiPath}`, { method: options.method || 'GET', headers, redirect: 'follow' });
   if (!response.ok) {
     const body = await response.text().catch(() => '');
