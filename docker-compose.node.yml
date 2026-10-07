@@ -1,25 +1,35 @@
-# Remote multi-organization runner node.
-#
-# The node-agent discovers/manages one GitHub runner registration per org.
-# Every managed runner shares one physical-node execution lock, so only one
-# workflow job can execute on this machine at a time. Jobs assigned to another
-# org wait in the runner job-start hook until the active job releases the slot.
+# GitHub runner fleet worker.
+# This agent talks directly to GitHub and reports status to the dashboard.
 services:
   node-agent:
     image: ${NODE_AGENT_IMAGE:-ghcr.io/nekosuneprojects/docker-github-runners-node-agent:latest}
+    build:
+      context: ./node-agent
+      dockerfile: Dockerfile
     env_file:
       - .env
     environment:
       DASHBOARD_URL: ${CENTRAL_DASHBOARD_URL}
       DASHBOARD_NODE_SHARED_SECRET: ${DASHBOARD_NODE_SHARED_SECRET}
 
+      GITHUB_AUTH_MODE: ${GITHUB_AUTH_MODE:-app}
+      GITHUB_APP_ID: ${GITHUB_APP_ID:-}
+      GITHUB_APP_PRIVATE_KEY_BASE64: ${GITHUB_APP_PRIVATE_KEY_BASE64:-}
+      GITHUB_APP_PRIVATE_KEY: ${GITHUB_APP_PRIVATE_KEY:-}
+      ACCESS_TOKEN: ${ACCESS_TOKEN:-}
+
+      GITHUB_ORGS: ${GITHUB_ORGS:-auto}
+      GITHUB_ORG_INCLUDE: ${GITHUB_ORG_INCLUDE:-}
+      GITHUB_ORG_EXCLUDE: ${GITHUB_ORG_EXCLUDE:-}
+      GITHUB_PERSONAL_REPOS: ${GITHUB_PERSONAL_REPOS:-auto}
+      GITHUB_PERSONAL_REPO_INCLUDE: ${GITHUB_PERSONAL_REPO_INCLUDE:-}
+      GITHUB_PERSONAL_REPO_EXCLUDE: ${GITHUB_PERSONAL_REPO_EXCLUDE:-}
+      GITHUB_PERSONAL_INCLUDE_ARCHIVED: ${GITHUB_PERSONAL_INCLUDE_ARCHIVED:-false}
+
       NODE_ID: ${NODE_ID}
       NODE_NAME: ${NODE_NAME:-Remote GitHub Builder}
-      NODE_FLEET_MODE: "true"
       NODE_LOCATION: ${NODE_LOCATION:-}
-
-      # GitHub credentials and target selection live only on the dashboard.
-      # This worker authenticates only to the dashboard broker.
+      NODE_FLEET_MODE: "true"
 
       RUNNER_IMAGE: ${RUNNER_IMAGE:-ghcr.io/nekosuneprojects/docker-github-runners:latest}
       RUNNER_NAME_PREFIX: ${RUNNER_NAME_PREFIX:-${NODE_ID:-neko-node}}
@@ -34,7 +44,6 @@ services:
       NODE_SHARED_LOCK_STALE_SECONDS: ${NODE_SHARED_LOCK_STALE_SECONDS:-259200}
       NODE_FLEET_RECONCILE_SECONDS: ${NODE_FLEET_RECONCILE_SECONDS:-120}
 
-      # Automatic physical-node sizing and routing labels.
       NODE_CAPACITY_CLASS: ${NODE_CAPACITY_CLASS:-auto}
       NODE_GPU: ${NODE_GPU:-auto}
       NODE_SMALL_MAX_CPU: ${NODE_SMALL_MAX_CPU:-2}
@@ -42,8 +51,6 @@ services:
       NODE_LARGE_MIN_CPU: ${NODE_LARGE_MIN_CPU:-8}
       NODE_LARGE_MIN_RAM_GB: ${NODE_LARGE_MIN_RAM_GB:-16}
 
-      # Dashboard heartbeat compatibility. Fleet mode reports the physical node;
-      # individual org/repository runner state remains available through GitHub.
       RUNNER_NAME: ${RUNNER_NAME_PREFIX:-${NODE_ID:-neko-node}}
       RUNNER_SCOPE: organization
       GITHUB_ORG: ""
@@ -61,7 +68,6 @@ services:
       NODE_STUCK_THRESHOLD_SECONDS: ${NODE_STUCK_THRESHOLD_SECONDS:-600}
       NODE_AUTO_RECOVER_STUCK: ${NODE_AUTO_RECOVER_STUCK:-false}
       NODE_STUCK_RECOVERY_COOLDOWN_SECONDS: ${NODE_STUCK_RECOVERY_COOLDOWN_SECONDS:-900}
-
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - runner-diag:/runner-diag
