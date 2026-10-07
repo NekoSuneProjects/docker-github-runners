@@ -167,6 +167,211 @@ GITHUB_PERSONAL_INCLUDE_ARCHIVED=false
 
 Organization runners and personal repository runners all use the same physical-node job lock, so the node still executes only one workflow job at a time regardless of which account owns the repository.
 
+## Automatic node sizing and workload routing
+
+Fleet nodes automatically classify their physical host from CPU and RAM and add runner labels that workflows can target:
+
+```text
+small   -> neko-size-small,  neko-lite
+medium  -> neko-size-medium, neko-build
+large   -> neko-size-large,  neko-build, neko-heavy
+GPU     -> neko-gpu
+all     -> neko-any
+```
+
+Default classification is:
+
+```text
+small:  CPU <= 2 OR RAM <= 4 GB
+large:  CPU >= 8 AND RAM >= 16 GB
+medium: everything in between
+```
+
+GPU capability is detected from the host Docker runtime's NVIDIA support. You can override detection with `NODE_CAPACITY_CLASS=small|medium|large` and `NODE_GPU=true|false`.
+
+GitHub selects a self-hosted runner before workflow steps execute, so the workflow must state the workload class it needs. The fleet also actively synchronizes these custom labels into GitHub Settings → Actions → Runners on every reconcile cycle, so changing a node from small to medium/large or enabling GPU updates the visible GitHub runner labels automatically. For example:
+
+```yaml
+jobs:
+  ping-api:
+    runs-on: [self-hosted, neko-lite]
+    steps:
+      - run: curl -f https://example.com/health
+
+  build-app:
+    runs-on: [self-hosted, neko-build]
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t app .
+
+  huge-build:
+    runs-on: [self-hosted, neko-heavy]
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker buildx build --platform linux/amd64,linux/arm64 .
+
+  gpu-job:
+    runs-on: [self-hosted, neko-gpu]
+    steps:
+      - run: docker run --rm --gpus all nvidia/cuda:latest nvidia-smi
+```
+
+That keeps curl/API/check jobs on small VPS nodes and prevents heavy/GPU workflows from landing on undersized machines.
+
+### GitHub runner label synchronization
+
+The node-agent does not rely only on the labels passed during runner registration. On every fleet reconcile it looks up the real GitHub runner ID and replaces the runner's **custom label set** through the GitHub Actions runner API.
+
+That means the labels visible in:
+
+```text
+Repository or Organization
+→ Settings
+→ Actions
+→ Runners
+→ Runner details
+```
+
+stay synchronized with the physical server.
+
+Examples:
+
+```text
+Small VPS:
+self-hosted
+linux
+x64
+docker
+buildx
+multiarch
+builder
+neko-any
+neko-size-small
+neko-lite
+```
+
+```text
+Medium VPS:
+self-hosted
+linux
+x64
+docker
+buildx
+multiarch
+builder
+neko-any
+neko-size-medium
+neko-build
+```
+
+```text
+Large VPS:
+self-hosted
+linux
+x64
+docker
+buildx
+multiarch
+builder
+neko-any
+neko-size-large
+neko-build
+neko-heavy
+```
+
+A GPU-capable node also receives:
+
+```text
+neko-gpu
+```
+
+If a node changes size class, GPU support changes, or the configured base labels change, the next fleet reconcile replaces the GitHub custom labels with the new desired set. Stale custom labels are therefore removed automatically.
+
+GitHub's built-in labels such as `self-hosted`, `linux`, `x64`, and `arm64` remain managed by GitHub and are not replaced by the custom-label synchronization.
+
+### Choosing a runner class in workflows
+
+Use the routing labels in `runs-on`.
+
+Lightweight API calls, webhooks, curl checks, and simple scripts:
+
+```yaml
+jobs:
+  health-check:
+    runs-on: [self-hosted, neko-lite]
+    steps:
+      - run: curl -fsS https://example.com/health
+```
+
+Normal builds and Docker builds:
+
+```yaml
+jobs:
+  build:
+    runs-on: [self-hosted, neko-build]
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t my-app .
+```
+
+Large compiles or expensive multi-architecture builds:
+
+```yaml
+jobs:
+  heavy-build:
+    runs-on: [self-hosted, neko-heavy]
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker buildx build --platform linux/amd64,linux/arm64 .
+```
+
+GPU workloads:
+
+```yaml
+jobs:
+  gpu-build:
+    runs-on: [self-hosted, neko-gpu]
+    steps:
+      - run: nvidia-smi
+```
+
+You can combine labels when a workload needs more than one capability:
+
+```yaml
+runs-on: [self-hosted, neko-heavy, neko-gpu]
+```
+
+This requires a large GPU-capable runner instead of any GPU node.
+
+### Capacity overrides
+
+Automatic detection can be overridden per physical node:
+
+```env
+NODE_CAPACITY_CLASS=auto
+NODE_GPU=auto
+```
+
+Valid manual values are:
+
+```env
+NODE_CAPACITY_CLASS=small
+NODE_CAPACITY_CLASS=medium
+NODE_CAPACITY_CLASS=large
+
+NODE_GPU=true
+NODE_GPU=false
+```
+
+Thresholds can also be changed:
+
+```env
+NODE_SMALL_MAX_CPU=2
+NODE_SMALL_MAX_RAM_GB=4
+NODE_LARGE_MIN_CPU=8
+NODE_LARGE_MIN_RAM_GB=16
+```
+
 ## Central dashboard
 
 The main Compose stack also contains the private Neko Runner Dashboard.

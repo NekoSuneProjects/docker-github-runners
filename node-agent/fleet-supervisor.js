@@ -1,5 +1,7 @@
 'use strict';
 
+const fs = require('fs');
+const os = require('os');
 const { spawn, execFile } = require('child_process');
 
 const DASHBOARD_URL = String(process.env.DASHBOARD_URL || '').replace(/\/+$/, '');
@@ -27,6 +29,13 @@ const UPDATE_ON_START = String(process.env.RUNNER_UPDATE_ON_START || 'true');
 const ENABLE_MULTIARCH = String(process.env.ENABLE_MULTIARCH_ON_START || 'true');
 const MULTIARCH_PLATFORMS = String(process.env.MULTIARCH_PLATFORMS || 'arm64,amd64');
 
+const CAPACITY_OVERRIDE = String(process.env.NODE_CAPACITY_CLASS || 'auto').trim().toLowerCase();
+const GPU_OVERRIDE = String(process.env.NODE_GPU || 'auto').trim().toLowerCase();
+const SMALL_MAX_CPU = Math.max(1, Number(process.env.NODE_SMALL_MAX_CPU || 2));
+const SMALL_MAX_RAM_GB = Math.max(1, Number(process.env.NODE_SMALL_MAX_RAM_GB || 4));
+const LARGE_MIN_CPU = Math.max(2, Number(process.env.NODE_LARGE_MIN_CPU || 8));
+const LARGE_MIN_RAM_GB = Math.max(4, Number(process.env.NODE_LARGE_MIN_RAM_GB || 16));
+
 let child = null;
 let stopping = false;
 let timer = null;
@@ -45,6 +54,81 @@ function truthy(value) {
 
 function safe(value) {
   return String(value || '').trim().replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 70);
+}
+
+function readHostText(file) {
+  try { return fs.readFileSync(file, 'utf8'); } catch { return ''; }
+}
+
+function hostCpuCount() {
+  const text = readHostText('/host/proc/cpuinfo');
+  const count = text.split('\n').filter(line => /^processor\s*:/i.test(line)).length;
+  return count || os.cpus().length || 1;
+}
+
+function hostMemoryBytes() {
+  const text = readHostText('/host/proc/meminfo');
+  const match = /^MemTotal:\s+(\d+)\s+kB/im.exec(text);
+  if (match) return Number(match[1]) * 1024;
+  return os.totalmem();
+}
+
+async function detectGpu() {
+  if (/^(1|true|yes|on|gpu|nvidia)$/i.test(GPU_OVERRIDE)) return true;
+  if (/^(0|false|no|off|none)$/i.test(GPU_OVERRIDE)) return false;
+
+  try {
+    const runtimes = await exec('docker', ['info', '--format', '{{json .Runtimes}}'], 15000);
+    if (/nvidia/i.test(runtimes)) return true;
+  } catch {}
+
+  return false;
+}
+
+async function detectCapabilities() {
+  const cpu = hostCpuCount();
+  const memoryBytes = hostMemoryBytes();
+  const ramGb = memoryBytes / (1024 ** 3);
+  const gpu = await detectGpu();
+
+  let size = CAPACITY_OVERRIDE;
+  if (!['small', 'medium', 'large'].includes(size)) {
+    if (cpu <= SMALL_MAX_CPU || ramGb <= SMALL_MAX_RAM_GB) size = 'small';
+    else if (cpu >= LARGE_MIN_CPU && ramGb >= LARGE_MIN_RAM_GB) size = 'large';
+    else size = 'medium';
+  }
+
+  const labels = new Set(csv(LABELS));
+  labels.add(`neko-size-${size}`);
+  labels.add('neko-any');
+
+  if (size === 'small') labels.add('neko-lite');
+  if (size === 'medium' || size === 'large') labels.add('neko-build');
+  if (size === 'large') labels.add('neko-heavy');
+  if (gpu) labels.add('neko-gpu');
+
+  return {
+    cpu,
+    memory_bytes: memoryBytes,
+    ram_gb: Number(ramGb.toFixed(1)),
+    size,
+    gpu,
+    labels: [...labels],
+    fingerprint: `${size}|${gpu ? 'gpu' : 'cpu'}|${[...labels].sort().join(',')}`,
+  };
+}
+
+async function existingRunnerFingerprint(id) {
+  if (!id) return '';
+  try {
+    return (await exec('docker', [
+      'inspect', '-f',
+      '{{ index .Config.Labels "neko.runner.capability-fingerprint" }}',
+      id,
+    ], 15000)).trim();
+  } catch {
+    return '';
+  }
 }
 
 function targetKey(target) {
@@ -66,17 +150,59 @@ function exec(command, args, timeout = 120000) {
   });
 }
 
-async function github(pathname) {
+async function github(pathname, options = {}) {
   const r = await fetch(`https://api.github.com${pathname}`, {
+    method: options.method || 'GET',
     headers: {
       Authorization: `Bearer ${ACCESS_TOKEN}`,
       Accept: 'application/vnd.github+json',
-      'X-GitHub-Api-Version': '2022-11-28',
-      'User-Agent': 'neko-github-runner-fleet/1.1',
+      'X-GitHub-Api-Version': '2026-03-10',
+      'User-Agent': 'neko-github-runner-fleet/1.2',
+      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
     },
+    body: options.body ? JSON.stringify(options.body) : undefined,
   });
   if (!r.ok) throw new Error(`GitHub ${r.status} for ${pathname}: ${(await r.text()).slice(0, 220)}`);
+  if (r.status === 204) return {};
   return r.json();
+}
+
+function runnerApiBase(target) {
+  return target.scope === 'organization'
+    ? `/orgs/${encodeURIComponent(target.org)}/actions/runners`
+    : `/repos/${target.repo.split('/').map(encodeURIComponent).join('/')}/actions/runners`;
+}
+
+async function findGitHubRunner(target, name) {
+  const base = runnerApiBase(target);
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const data = await github(`${base}?per_page=100`);
+    const runner = (data.runners || []).find(v => v.name === name);
+    if (runner) return runner;
+    if (attempt < 9) await new Promise(resolve => setTimeout(resolve, 1500));
+  }
+  return null;
+}
+
+async function syncGitHubRunnerLabels(target, name, labels) {
+  const runner = await findGitHubRunner(target, name);
+  if (!runner) {
+    throw new Error(`Runner ${name} is not visible in GitHub yet for ${targetKey(target)}`);
+  }
+
+  const desired = [...new Set(labels.map(v => String(v).trim()).filter(Boolean))].slice(0, 100);
+  const result = await github(
+    `${runnerApiBase(target)}/${runner.id}/labels`,
+    { method: 'PUT', body: { labels: desired } },
+  );
+
+  const applied = (result.labels || [])
+    .filter(v => v.type === 'custom')
+    .map(v => v.name)
+    .sort();
+
+  console.log(`[fleet] GitHub labels synced for ${name}: ${applied.join(',') || '(none)'}`);
+  return applied;
 }
 
 async function discoverOrgs() {
@@ -212,14 +338,22 @@ async function ensureVolume(name) {
   }
 }
 
-async function ensureRunner(target) {
+async function ensureRunner(target, capabilities) {
   let id = await findContainer(target);
   if (id) {
-    if (!(await isRunning(id))) {
-      console.log(`[fleet] starting ${targetKey(target)} runner ${id}`);
-      await exec('docker', ['start', id], 60000);
+    const fingerprint = await existingRunnerFingerprint(id);
+    if (fingerprint !== capabilities.fingerprint) {
+      console.log(`[fleet] recreating ${targetKey(target)}: capacity labels changed (${fingerprint || 'legacy'} -> ${capabilities.fingerprint})`);
+      await exec('docker', ['rm', '-f', id], 60000);
+      id = '';
+    } else {
+      if (!(await isRunning(id))) {
+        console.log(`[fleet] starting ${targetKey(target)} runner ${id}`);
+        await exec('docker', ['start', id], 60000);
+      }
+      await syncGitHubRunnerLabels(target, runnerName(target), capabilities.labels);
+      return;
     }
-    return;
   }
 
   const name = runnerName(target);
@@ -235,10 +369,13 @@ async function ensureRunner(target) {
     '--label', `neko.runner.target=${targetKey(target)}`,
     '--label', `neko.runner.scope=${target.scope}`,
     '--label', `neko.runner.name=${name}`,
+    '--label', `neko.runner.capacity=${capabilities.size}`,
+    '--label', `neko.runner.gpu=${capabilities.gpu ? 'true' : 'false'}`,
+    '--label', `neko.runner.capability-fingerprint=${capabilities.fingerprint}`,
     '-e', `RUNNER_SCOPE=${target.scope}`,
     '-e', `ACCESS_TOKEN=${ACCESS_TOKEN}`,
     '-e', `RUNNER_NAME=${name}`,
-    '-e', `LABELS=${LABELS}`,
+    '-e', `LABELS=${capabilities.labels.join(',')}`,
     '-e', `RUNNER_UPDATE_ON_START=${UPDATE_ON_START}`,
     '-e', `ENABLE_MULTIARCH_ON_START=${ENABLE_MULTIARCH}`,
     '-e', `MULTIARCH_PLATFORMS=${MULTIARCH_PLATFORMS}`,
@@ -259,6 +396,7 @@ async function ensureRunner(target) {
 
   args.push(RUNNER_IMAGE);
   await exec('docker', args, 120000);
+  await syncGitHubRunnerLabels(target, name, capabilities.labels);
 }
 
 async function removeUnknownRunners(desired) {
@@ -282,6 +420,7 @@ async function removeUnknownRunners(desired) {
 async function reconcile() {
   if (stopping) return;
   try {
+    const capabilities = await detectCapabilities();
     const targets = await discoverTargets();
     if (!targets.length) {
       throw new Error('No GitHub targets resolved. Configure GITHUB_ORGS and/or GITHUB_PERSONAL_REPOS.');
@@ -298,7 +437,7 @@ async function reconcile() {
 
     for (const target of targets) {
       try {
-        await ensureRunner(target);
+        await ensureRunner(target, capabilities);
       } catch (err) {
         console.error(`[fleet] ${targetKey(target)}: ${err.output || err.message}`);
       }
@@ -306,7 +445,7 @@ async function reconcile() {
 
     const orgCount = targets.filter(v => v.scope === 'organization').length;
     const repoCount = targets.filter(v => v.scope === 'repository').length;
-    console.log(`[fleet] reconciled ${targets.length} target(s): ${orgCount} org(s), ${repoCount} personal repo(s); shared concurrency=1`);
+    console.log(`[fleet] reconciled ${targets.length} target(s): ${orgCount} org(s), ${repoCount} personal repo(s); node=${capabilities.size} cpu=${capabilities.cpu} ram=${capabilities.ram_gb}GB gpu=${capabilities.gpu}; labels=${capabilities.labels.join(',')}; shared concurrency=1`);
   } catch (err) {
     console.error(`[fleet] reconcile failed: ${err.output || err.message}`);
   } finally {
@@ -360,8 +499,18 @@ if (!ACCESS_TOKEN) {
 console.log(
   `[fleet] mode enabled for node ${NODE_ID}; orgs=${RAW_ORGS || 'off'}; personal-repos=${RAW_PERSONAL_REPOS || 'off'}; one shared job slot`,
 );
-startAgent();
-reconcile();
+
+detectCapabilities()
+  .then(capabilities => {
+    process.env.NODE_LABELS = capabilities.labels.join(',');
+    console.log(`[fleet] detected node capacity: size=${capabilities.size} cpu=${capabilities.cpu} ram=${capabilities.ram_gb}GB gpu=${capabilities.gpu}; routing labels=${capabilities.labels.join(',')}`);
+    startAgent();
+    reconcile();
+  })
+  .catch(err => {
+    console.error(`[fleet] capability detection failed: ${err.output || err.message}`);
+    process.exit(1);
+  });
 process.once('SIGTERM', () => stop('SIGTERM'));
 process.once('SIGINT', () => stop('SIGINT'));
 process.once('SIGHUP', () => stop('SIGHUP'));
