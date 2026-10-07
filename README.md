@@ -167,6 +167,57 @@ GITHUB_PERSONAL_INCLUDE_ARCHIVED=false
 
 Organization runners and personal repository runners all use the same physical-node job lock, so the node still executes only one workflow job at a time regardless of which account owns the repository.
 
+## Automatic node sizing and workload routing
+
+Fleet nodes automatically classify their physical host from CPU and RAM and add runner labels that workflows can target:
+
+```text
+small   -> neko-size-small,  neko-lite
+medium  -> neko-size-medium, neko-build
+large   -> neko-size-large,  neko-heavy
+GPU     -> neko-gpu
+all     -> neko-any
+```
+
+Default classification is:
+
+```text
+small:  CPU <= 2 OR RAM <= 4 GB
+large:  CPU >= 8 AND RAM >= 16 GB
+medium: everything in between
+```
+
+GPU capability is detected from the host Docker runtime's NVIDIA support. You can override detection with `NODE_CAPACITY_CLASS=small|medium|large` and `NODE_GPU=true|false`.
+
+GitHub selects a self-hosted runner before workflow steps execute, so the workflow must state the workload class it needs. For example:
+
+```yaml
+jobs:
+  ping-api:
+    runs-on: [self-hosted, neko-lite]
+    steps:
+      - run: curl -f https://example.com/health
+
+  build-app:
+    runs-on: [self-hosted, neko-build]
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t app .
+
+  huge-build:
+    runs-on: [self-hosted, neko-heavy]
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker buildx build --platform linux/amd64,linux/arm64 .
+
+  gpu-job:
+    runs-on: [self-hosted, neko-gpu]
+    steps:
+      - run: docker run --rm --gpus all nvidia/cuda:latest nvidia-smi
+```
+
+That keeps curl/API/check jobs on small VPS nodes and prevents heavy/GPU workflows from landing on undersized machines.
+
 ## Central dashboard
 
 The main Compose stack also contains the private Neko Runner Dashboard.
