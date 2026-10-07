@@ -137,6 +137,13 @@ function targetKey(target) {
     : `repo:${target.repo.toLowerCase()}`;
 }
 
+function targetFromKey(key) {
+  const value = String(key || '');
+  if (value.startsWith('org:') && value.slice(4)) return { scope:'organization', org:value.slice(4) };
+  if (value.startsWith('repo:') && value.slice(5).includes('/')) return { scope:'repository', repo:value.slice(5) };
+  return null;
+}
+
 function runnerName(target) {
   const suffix = target.scope === 'organization'
     ? `org-${safe(target.org)}`
@@ -307,7 +314,7 @@ async function removeUnknownRunners(desired, targetByKey) {
     console.log(`[fleet] removing no-longer-managed runner ${key}`);
     await exec('docker', ['rm', '-f', id], 60000).catch(() => {});
 
-    const target = targetByKey.get(key);
+    const target = targetByKey.get(key) || targetFromKey(key);
     if (target && name) await removeRemoteRunner(target, name);
   }
 }
