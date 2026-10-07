@@ -282,7 +282,7 @@ Treat the GitHub App private key like a root credential for every installation g
 Recommended practices:
 
 - keep the PEM outside Git;
-- use the base64 environment form only on trusted runner hosts;
+- use the base64 environment form only on the trusted central dashboard host;
 - limit App installation to accounts/repositories that the runner fleet should manage;
 - do not grant unrelated GitHub App permissions;
 - rotate the App private key if it is ever exposed;
