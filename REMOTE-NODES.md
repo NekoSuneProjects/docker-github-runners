@@ -103,7 +103,7 @@ The fleet adds routing labels according to the detected host:
 ```text
 small  -> neko-lite
 medium -> neko-build
-large  -> neko-heavy
+large  -> neko-build, neko-heavy
 GPU    -> neko-gpu
 ```
 
