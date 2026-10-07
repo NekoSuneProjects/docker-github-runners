@@ -11,6 +11,15 @@ on:
       - runner-job-completed.sh
       - .github/workflows/docker.yml
   workflow_dispatch:
+    inputs:
+      build_runner:
+        description: Where should this image build run?
+        required: true
+        default: self-hosted
+        type: choice
+        options:
+          - self-hosted
+          - github-hosted
 
 concurrency:
   group: runner-image-${{ github.ref }}
@@ -22,8 +31,8 @@ permissions:
 
 jobs:
   runner:
-    name: Build Runner AMD64 + ARM64
-    runs-on: [self-hosted, linux, docker, buildx]
+    name: Build Runner AMD64 + ARM64 (${{ github.event_name == 'workflow_dispatch' && inputs.build_runner || 'self-hosted' }})
+    runs-on: ${{ github.event_name == 'workflow_dispatch' && inputs.build_runner == 'github-hosted' && 'ubuntu-latest' || fromJSON('["self-hosted","linux","docker","buildx"]') }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
