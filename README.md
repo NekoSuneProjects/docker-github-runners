@@ -141,6 +141,34 @@ Typical runner labels:
 LABELS=docker,buildx,multiarch,builder
 ```
 
+## Dashboard control plane and credential broker
+
+The recommended architecture keeps all long-lived GitHub credentials on the central dashboard.
+
+```text
+GitHub App private key / PAT
+          │
+          ▼
+  Central Dashboard
+  - discovers allowed orgs/repos
+  - mints App installation tokens
+  - talks to GitHub runner APIs
+  - removes stale registrations
+  - synchronizes labels
+  - creates runner registration tokens
+          │
+          │ HTTPS + DASHBOARD_NODE_SHARED_SECRET
+          ▼
+      Worker nodes
+  - no GitHub App private key
+  - no PAT
+  - no installation token
+  - receive only short-lived runner registration tokens
+  - execute workflow jobs
+```
+
+Remote nodes therefore need only the dashboard URL, a node authentication secret, and their local capacity settings. GitHub organization/repository selection is centralized on the dashboard.
+
 ## GitHub authentication modes
 
 The fleet supports two authentication modes:
