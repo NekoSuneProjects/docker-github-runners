@@ -70,6 +70,25 @@ if (NODE_SHARED_SECRET && NODE_SHARED_SECRET.length < 32) {
   process.exit(1);
 }
 
+if (!['token','app'].includes(GITHUB_AUTH_MODE)) {
+  console.error(`ERROR: unsupported GITHUB_AUTH_MODE=${GITHUB_AUTH_MODE}; use token or app`);
+  process.exit(1);
+}
+if (GITHUB_AUTH_MODE === 'app' && (BROKER_ORGS || BROKER_PERSONAL_REPOS)) {
+  if (!GITHUB_APP_ID || !appPrivateKey()) {
+    console.error('ERROR: GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY_BASE64 (or GITHUB_APP_PRIVATE_KEY) are required for dashboard App broker mode.');
+    process.exit(1);
+  }
+  try { createAppJwt(); } catch (err) {
+    console.error(`ERROR: GitHub App private key/JWT validation failed: ${err.message}`);
+    process.exit(1);
+  }
+}
+if (GITHUB_AUTH_MODE === 'token' && (BROKER_ORGS || BROKER_PERSONAL_REPOS) && !GITHUB_TOKEN) {
+  console.error('ERROR: ACCESS_TOKEN or GITHUB_DASHBOARD_TOKEN is required for dashboard token broker mode.');
+  process.exit(1);
+}
+
 function securityHeaders() {
   return {
     'x-content-type-options': 'nosniff',
@@ -271,11 +290,19 @@ async function discoverBrokerTargets() {
   if (BROKER_ORGS && !/^(none|off|false)$/i.test(BROKER_ORGS)) {
     let orgs = [];
     if (/^(auto|\*)$/i.test(BROKER_ORGS)) {
-      if (GITHUB_AUTH_MODE !== 'app') throw new Error('Dashboard broker auto org discovery requires GitHub App mode');
-      for (const installation of await listAppInstallations()) {
-        if (installation?.account?.type === 'Organization' && installation?.account?.login) {
-          orgs.push(installation.account.login);
-          appInstallationIdCache.set(`org:${installation.account.login.toLowerCase()}`, installation.id);
+      if (GITHUB_AUTH_MODE === 'app') {
+        for (const installation of await listAppInstallations()) {
+          if (installation?.account?.type === 'Organization' && installation?.account?.login) {
+            orgs.push(installation.account.login);
+            appInstallationIdCache.set(`org:${installation.account.login.toLowerCase()}`, installation.id);
+          }
+        }
+      } else {
+        for (let page=1; page<=10; page++) {
+          const rows = await githubBrokerFetch(`/user/memberships/orgs?state=active&per_page=100&page=${page}`);
+          if (!Array.isArray(rows) || !rows.length) break;
+          for (const row of rows) if (row?.role === 'admin' && row?.organization?.login) orgs.push(row.organization.login);
+          if (rows.length < 100) break;
         }
       }
     } else orgs = BROKER_ORGS.split(',').map(v=>v.trim()).filter(Boolean);
@@ -290,19 +317,31 @@ async function discoverBrokerTargets() {
   if (BROKER_PERSONAL_REPOS && !/^(none|off|false)$/i.test(BROKER_PERSONAL_REPOS)) {
     let repos = [];
     if (/^(auto|\*)$/i.test(BROKER_PERSONAL_REPOS)) {
-      if (GITHUB_AUTH_MODE !== 'app') throw new Error('Dashboard broker auto personal repo discovery requires GitHub App mode');
-      for (const installation of await listAppInstallations()) {
-        if (installation?.account?.type !== 'User' || !installation?.id) continue;
-        const token = await installationTokenById(installation.id);
+      if (GITHUB_AUTH_MODE === 'app') {
+        for (const installation of await listAppInstallations()) {
+          if (installation?.account?.type !== 'User' || !installation?.id) continue;
+          const token = await installationTokenById(installation.id);
+          for (let page=1; page<=20; page++) {
+            const data = await githubBrokerFetch(`/installation/repositories?per_page=100&page=${page}`, { token });
+            const rows = Array.isArray(data?.repositories) ? data.repositories : [];
+            if (!rows.length) break;
+            for (const row of rows) {
+              const fullName = String(row?.full_name||'').trim();
+              if (!fullName || (!BROKER_INCLUDE_ARCHIVED && row?.archived)) continue;
+              repos.push(fullName);
+              appInstallationIdCache.set(`repo:${fullName.toLowerCase()}`, installation.id);
+            }
+            if (rows.length < 100) break;
+          }
+        }
+      } else {
         for (let page=1; page<=20; page++) {
-          const data = await githubBrokerFetch(`/installation/repositories?per_page=100&page=${page}`, { token });
-          const rows = Array.isArray(data?.repositories) ? data.repositories : [];
-          if (!rows.length) break;
+          const rows = await githubBrokerFetch(`/user/repos?affiliation=owner&visibility=all&sort=full_name&direction=asc&per_page=100&page=${page}`);
+          if (!Array.isArray(rows) || !rows.length) break;
           for (const row of rows) {
-            const fullName = String(row?.full_name||'').trim();
+            const fullName=String(row?.full_name||'').trim();
             if (!fullName || (!BROKER_INCLUDE_ARCHIVED && row?.archived)) continue;
             repos.push(fullName);
-            appInstallationIdCache.set(`repo:${fullName.toLowerCase()}`, installation.id);
           }
           if (rows.length < 100) break;
         }
