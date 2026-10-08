@@ -49,6 +49,9 @@ const SMALL_MAX_CPU = Math.max(1, Number(process.env.NODE_SMALL_MAX_CPU || 4));
 const SMALL_MAX_RAM_GB = Math.max(1, Number(process.env.NODE_SMALL_MAX_RAM_GB || 8));
 const LARGE_MIN_CPU = Math.max(2, Number(process.env.NODE_LARGE_MIN_CPU || 8));
 const LARGE_MIN_RAM_GB = Math.max(4, Number(process.env.NODE_LARGE_MIN_RAM_GB || 16));
+const NODE_STORAGE_PATH = String(process.env.NODE_STORAGE_PATH || '/host');
+const SMALL_MAX_STORAGE_GB = Math.max(1, Number(process.env.NODE_SMALL_MAX_STORAGE_GB || 40));
+const LARGE_MIN_STORAGE_GB = Math.max(SMALL_MAX_STORAGE_GB+1, Number(process.env.NODE_LARGE_MIN_STORAGE_GB || 100));
 
 const API_VERSION = '2022-11-28';
 const installationIdCache = new Map();
@@ -365,15 +368,24 @@ async function detectGpu() {
   } catch {}
   return false;
 }
+function hostStorageGb() {
+  try {
+    const info=fs.statfsSync(NODE_STORAGE_PATH,{bigint:true});
+    const total=Number(info.blocks*info.bsize)/(1024**3);
+    return Number.isFinite(total)&&total>0?total:null;
+  } catch { return null; }
+}
 async function detectCapabilities() {
   const cpu = hostCpuCount();
   const memoryBytes = hostMemoryBytes();
   const ramGb = memoryBytes / (1024 ** 3);
   const gpu = await detectGpu();
+  const storageGb = hostStorageGb();
   let size = CAPACITY_OVERRIDE;
   if (!['small', 'medium', 'large'].includes(size)) {
-    if (cpu <= SMALL_MAX_CPU || ramGb <= SMALL_MAX_RAM_GB) size = 'small';
-    else if (cpu >= LARGE_MIN_CPU && ramGb >= LARGE_MIN_RAM_GB) size = 'large';
+    // The weakest resource limits the class; six vCPU with 8 GB is still lite.
+    if (cpu <= SMALL_MAX_CPU || ramGb <= SMALL_MAX_RAM_GB || (storageGb!==null && storageGb<SMALL_MAX_STORAGE_GB)) size = 'small';
+    else if (cpu >= LARGE_MIN_CPU && ramGb >= LARGE_MIN_RAM_GB && (storageGb===null || storageGb>=LARGE_MIN_STORAGE_GB)) size = 'large';
     else size = 'medium';
   }
   const labels = new Set(csv(LABELS).filter(label => !/^neko-(?:any|size-(?:small|medium|large)|lite|build|heavy|gpu)$/i.test(label)));
@@ -384,7 +396,7 @@ async function detectCapabilities() {
   if (size === 'large') labels.add('neko-heavy');
   if (gpu) labels.add('neko-gpu');
   return {
-    cpu, memory_bytes: memoryBytes, ram_gb: Number(ramGb.toFixed(1)), size, gpu,
+    cpu, memory_bytes: memoryBytes, ram_gb: Number(ramGb.toFixed(1)), storage_gb: storageGb===null?null:Number(storageGb.toFixed(1)), size, gpu,
     labels: [...labels],
     fingerprint: `${size}|${gpu ? 'gpu' : 'cpu'}|${[...labels].sort().join(',')}`,
   };
