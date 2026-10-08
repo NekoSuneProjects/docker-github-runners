@@ -175,7 +175,7 @@ Large GPU work:
 runs-on: [self-hosted, neko-heavy, neko-gpu]
 ```
 
-Because all organization and personal-repository runners on one physical server still share the node execution lock, these labels control **which physical server GitHub selects**, while the shared lock still limits that server to one active job at a time.
+The fleet agent exposes a bounded number of registered runner slots per physical node. GitHub queues jobs for the currently registered scope and labels; the agent rotates idle scope registrations so personal repositories can share capacity without blocking job hooks.
 
 Start the remote stack:
 
@@ -232,3 +232,9 @@ Each image is built for:
 linux/amd64
 linux/arm64
 ```
+
+## Lock-free scheduling (agent, runner, dashboard branches)
+
+No shared lock directory or job-start hook is used in new images. The agent estimates a node's simultaneous job capacity from CPU and RAM, reserving one CPU and 2 GiB RAM for the host. Configure `NODE_MAX_CONCURRENT_JOBS=0` for automatic capacity, `NODE_SLOT_CPU_CORES=2`, `NODE_SLOT_RAM_GB=4`, and `NODE_SLOT_ROTATE_SECONDS=600` on the worker. The dashboard node detail panel provides authenticated controls for these limits; changes apply during the next fleet reconciliation. GitHub org runners can cover repositories in that organization; separate personal repositories require individually registered scopes and are rotated. Expect some queue latency when there are more scopes than slots.
+
+**Migration:** build and deploy updated runner, agent, and dashboard images together. Old runner containers retain old hooks until replaced. Schedule the migration during idle time, ensure all running jobs have finished, then remove old managed runner containers on that node and let the agent recreate them. Do not delete persistent work or diagnostics volumes. Unused old lock volumes can be removed only after verifying nothing mounts them. Back up deployment configuration before updating.
