@@ -186,7 +186,7 @@ function upsertJob(job) {
     .run(job.repo, job.run_id, job.id, job.status, job.conclusion, job.runner_name, job.runner_group_name, job.runner_type, new Date().toISOString(), JSON.stringify(job));
 }
 function snapshot() {
-  const runs = db.prepare('SELECT json FROM github_live_runs ORDER BY datetime(updated_at) DESC LIMIT 500').all().map(r => JSON.parse(r.json));
+  const runs = db.prepare('SELECT json FROM github_live_runs ORDER BY datetime(json_extract(json, "$.created_at")) DESC, run_id DESC LIMIT 500').all().map(r => JSON.parse(r.json));
   const jobs = db.prepare('SELECT json FROM github_live_jobs ORDER BY datetime(updated_at) DESC LIMIT 2000').all().map(r => JSON.parse(r.json));
   const activeJobs = jobs.filter(j => ['queued','in_progress','waiting','pending'].includes(String(j.status)));
   const byRun = {};
