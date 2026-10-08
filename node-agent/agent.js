@@ -228,6 +228,17 @@ async function payload() {
     kernel:kernel(),
     uptime_seconds:uptime(),
     runner_busy:busy,
+    scheduling: {
+      mode: Number(process.env.NODE_MAX_CONCURRENT_JOBS || 0) > 0 ? 'capped-auto' : 'auto',
+      cpu_per_slot: Math.max(1, Number(process.env.NODE_SLOT_CPU_CORES || 2)),
+      ram_gb_per_slot: Math.max(1, Number(process.env.NODE_SLOT_RAM_GB || 4)),
+      max_slots: Math.max(0, Number(process.env.NODE_MAX_CONCURRENT_JOBS || 0)),
+      capacity: Math.max(1, Math.min(
+        Math.max(0, Number(process.env.NODE_MAX_CONCURRENT_JOBS || 0)) || Infinity,
+        Math.max(1, Math.floor(Math.max(1, cpuCount() - 1) / Math.max(1, Number(process.env.NODE_SLOT_CPU_CORES || 2)))),
+        Math.max(1, Math.floor(Math.max(1, (mem.total / (1024 ** 3)) - 2) / Math.max(1, Number(process.env.NODE_SLOT_RAM_GB || 4))))
+      ))
+    },
     watchdog,
     recovery_result:recoveryResult,
     metrics:{load_1:l1||0,load_5:l5||0,load_15:l15||0,memory_total:mem.total,memory_free:mem.free,memory_used_percent:Math.max(0,Math.min(100,memPct)),cpu_count:cpuCount()},
