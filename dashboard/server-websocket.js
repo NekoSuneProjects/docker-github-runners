@@ -88,6 +88,7 @@ async function handleWebhook(req,res){
   if(!equal(supplied,expected))return json(res,401,{error:'Invalid GitHub webhook signature'});
   let payload;try{payload=JSON.parse(body.toString('utf8')||'{}')}catch{return json(res,400,{error:'Invalid webhook JSON'})}
   const event=String(req.headers['x-github-event']||'unknown');
+  console.log('[github-webhook] verified delivery: event='+event+' action='+String(payload?.action||'')+' repo='+String(payload?.repository?.full_name||'').slice(0,180));
   if(['workflow_job','workflow_run','check_run','ping'].includes(event)){
     process.emit('neko:github-webhook',payload);
     broadcast('github-webhook',{event,repository:payload?.repository?.name||'',action:payload?.action||''});
