@@ -379,6 +379,33 @@ function pendingCleanup(nodeId) {
   db.prepare("UPDATE cleanup_commands SET status='issued',issued_at=? WHERE id=?").run(now, cmd.id);
   return { id: cmd.id, type: 'cleanup', reason: cmd.reason, include_volumes: Boolean(cmd.include_volumes) };
 }
+// Persistent local build history survives agent disconnects and dashboard restarts.
+db.exec(`CREATE TABLE IF NOT EXISTS node_workflow_history (
+  node_id TEXT NOT NULL, container TEXT NOT NULL, started_at TEXT NOT NULL,
+  job_state TEXT NOT NULL, last_seen TEXT NOT NULL, json TEXT NOT NULL,
+  PRIMARY KEY(node_id,container,started_at)
+);
+CREATE INDEX IF NOT EXISTS idx_node_workflow_history_seen ON node_workflow_history(last_seen DESC);`);
+function saveNodeWorkflowHistory(nodeId, runners, at) {
+  if(!Array.isArray(runners))return;
+  const put=db.prepare(`INSERT INTO node_workflow_history(node_id,container,started_at,job_state,last_seen,json)
+  VALUES(?,?,?,?,?,?) ON CONFLICT(node_id,container,started_at)
+  DO UPDATE SET job_state=excluded.job_state,last_seen=excluded.last_seen,json=excluded.json`);
+  const previous=db.prepare('SELECT started_at,json FROM node_workflow_history WHERE node_id=? AND container=? ORDER BY last_seen DESC LIMIT 1');
+  for(const r of runners){
+    if(!r||typeof r!=='object'||!r.container)continue;
+    const started=String(r.job_started_at||'');
+    if(r.job_state==='busy'&&/^\\d{4}-\\d{2}-\\d{2}T/.test(started)){
+      put.run(nodeId,String(r.container),started,'in_progress',at,JSON.stringify({...r,history_source:'node'}));
+    } else if(r.job_state==='idle'){
+      const prior=previous.get(nodeId,String(r.container));
+      if(prior){
+        const old=JSON.parse(prior.json);
+        if(old.job_state==='busy')put.run(nodeId,String(r.container),prior.started_at,'completed',at,JSON.stringify({...old,job_state:'completed',completed_at:at,history_source:'node'}));
+      }
+    }
+  }
+}
 async function receiveHeartbeat(req, res) {
   if (!NODE_SHARED_SECRET) return json(res, 503, { error: 'Remote node ingestion is disabled' });
   if (!nodeAuthorized(req)) return json(res, 401, { error: 'Invalid node token' });
@@ -391,6 +418,7 @@ async function receiveHeartbeat(req, res) {
     ON CONFLICT(id) DO UPDATE SET name=excluded.name,location=excluded.location,runner_name=excluded.runner_name,labels_json=excluded.labels_json,agent_version=excluded.agent_version,hostname=excluded.hostname,platform=excluded.platform,arch=excluded.arch,kernel=excluded.kernel,uptime_seconds=excluded.uptime_seconds,metrics_json=excluded.metrics_json,storage_json=excluded.storage_json,log_file=excluded.log_file,sent_at=excluded.sent_at,last_seen=excluded.last_seen,source_ip=excluded.source_ip,runner_busy=excluded.runner_busy`).run(body.id, body.name, body.location, body.runner_name, JSON.stringify(body.labels), body.agent_version, body.hostname, body.platform, body.arch, body.kernel, body.uptime_seconds, JSON.stringify(body.metrics), JSON.stringify(body.storage), body.log_file, body.sent_at, now, clientIp(req), body.runner_busy === null ? null : (body.runner_busy ? 1 : 0));
   if (body.fleet_runners !== null) {
     db.prepare('UPDATE nodes SET fleet_runners_json=? WHERE id=?').run(JSON.stringify(body.fleet_runners), body.id);
+    saveNodeWorkflowHistory(body.id,body.fleet_runners,now);
   }
   archiveLog(body.id, body.log_file, body.log_tail);
   if (previous && previous.runner_busy === 1 && body.runner_busy === false && previous.auto_cleanup === 1) queueCleanup(body.id, 'job-finished', Boolean(previous.include_volumes));
