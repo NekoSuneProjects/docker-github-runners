@@ -335,7 +335,7 @@ function normalizeNodePayload(body) {
   const fleet = Array.isArray(body.fleet_runners) ? body.fleet_runners.slice(0, 100).filter(r => r && typeof r === 'object').map(r => ({
     container: safeString(r.container, 200), image: safeString(r.image, 200),
     status: safeString(r.status, 100), scope: safeString(r.scope, 30),
-    target: safeString(r.target, 200), running: r.running === true, job_state: ['busy','idle','unknown'].includes(r.job_state)?r.job_state:'unknown', job_name: safeString(r.job_name,160), job_repo: safeString(r.job_repo,180), job_run_id: safeString(r.job_run_id,40), job_run_url: safeString(r.job_run_url,350), job_workflow: safeString(r.job_workflow,160), job_branch: safeString(r.job_branch,160), job_sha: safeString(r.job_sha,40), job_event: safeString(r.job_event,80), job_actor: safeString(r.job_actor,100), console_tail: stripAnsi(safeString(r.console_tail,8192)).slice(-8192), console_last_output_at: safeString(r.console_last_output_at,40)
+    target: safeString(r.target, 200), running: r.running === true, job_state: ['busy','idle','unknown'].includes(r.job_state)?r.job_state:'unknown', job_name: safeString(r.job_name,160), job_repo: safeString(r.job_repo,180), job_run_id: safeString(r.job_run_id,40), job_run_url: safeString(r.job_run_url,350), job_workflow: safeString(r.job_workflow,160), job_branch: safeString(r.job_branch,160), job_sha: safeString(r.job_sha,40), job_event: safeString(r.job_event,80), job_actor: safeString(r.job_actor,100), job_started_at: safeString(r.job_started_at,40), console_tail: stripAnsi(safeString(r.console_tail,8192)).slice(-8192), console_last_output_at: safeString(r.console_last_output_at,40)
   })).filter(r => r.container.startsWith('neko-runner-')) : null;
   return {
     fleet_runners: fleet,
