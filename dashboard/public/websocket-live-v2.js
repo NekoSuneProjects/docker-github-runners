@@ -122,7 +122,7 @@ function renderRunners(){
 function workflowCells(run){const p=progress(run),j=p.job,rt=j?.runner_type||'waiting',runner=j?.runner_name||(run.status==='completed'?(run.conclusion==='cancelled'?'Cancelled before runner assignment':'Unassigned'):'Waiting'),node=j?.runner_name?nodeByRunner(j.runner_name):null;return`<td><b>${esc(run.repo)}</b></td><td>${esc(run.display_title||run.name)}<div class="node-sub">#${esc(run.run_number)}${p.total?` • ${p.pct}%`:''}</div></td><td>${esc(run.branch||'–')}</td><td><span class="badge ${badge(run.status,run.conclusion)}">${esc(run.conclusion||run.status)}</span></td><td>${esc(runner)}${j?`<span class="runner-type ${typeClass(rt)}">${typeLabel(rt)}</span>`:''}${node?`<div class="node-sub">Node: ${esc(node.name)}</div>`:rt==='github_hosted'?'<div class="node-sub">GitHub public infrastructure</div>':''}</td><td>${esc(run.actor||'unknown')}</td><td><span title="${esc(run.created_at||'')}">${run.created_at?new Date(run.created_at).toLocaleString(): '–'}</span></td><td><span title="${esc(run.updated_at||'')}">${run.updated_at?new Date(run.updated_at).toLocaleString():'–'}</span></td>`}
 function renderWorkflows(){
  const c=$('workflowRows');if(!c)return;
- const remote=[...(live.overview?.runs||[])].sort((a,b)=>Date.parse(b.created_at||0)-Date.parse(a.created_at||0));
+ const remote=[...(live.overview?.runs||[])].sort((a,b)=>(Date.parse(b.created_at||b.updated_at||0)||0)-(Date.parse(a.created_at||a.updated_at||0)||0)||Number(b.id||0)-Number(a.id||0));
  const norm=v=>String(v||'').toLowerCase().replace(/^neko-runner-/,'').replace(/[^a-z0-9]/g,'');
  const remoteBusy=new Set((live.overview?.active_jobs||[]).filter(j=>j.status==='in_progress').map(j=>norm(j.runner_name)).filter(Boolean));
  const liveLocal=nodeWorkflowsEnabled()?fleetContainers().filter(r=>r.job_state==='busy'&&!remoteBusy.has(norm(r.container))):[];
@@ -135,9 +135,10 @@ function renderWorkflows(){
  }
  c.querySelectorAll('tr.empty-row, tr:not([data-live-key]):not([data-workflow])').forEach(el=>el.remove());
  const rows=[
-  ...remote.map(r=>({key:'remote:'+r.repo+'|'+r.id,type:'remote',value:r})),
-  ...local.map(r=>({key:'local:'+r.container+':'+(r.job_started_at||''),type:'local',value:r}))
- ];
+  ...remote.map(r=>({key:'remote:'+r.repo+'|'+r.id,type:'remote',value:r,time:Date.parse(r.created_at||r.updated_at||0)||0})),
+  ...local.map(r=>({key:'local:'+r.container+':'+(r.job_started_at||''),type:'local',value:r,time:Date.parse(r.job_started_at||r.history_updated_at||0)||0}))
+ ].sort((a,b)=>b.time-a.time||b.key.localeCompare(a.key));
+ // keyed preserves existing DOM nodes; explicitly reinsert them in sorted order.
  keyed(c,rows,x=>x.key,()=>{const el=document.createElement('tr');el.className='workflow-row';return el},(el,x)=>{
   if(x.type==='remote'){
    const r=x.value;el.dataset.workflow=r.repo+'|'+r.id;el.onclick=()=>openBuild(el.dataset.workflow);
@@ -157,6 +158,7 @@ function renderWorkflows(){
    '<td>'+esc(updated?new Date(updated).toLocaleString():'Not reported')+'</td>';
   if(el.dataset.baseHtml!==html){el.dataset.baseHtml=html;el.innerHTML=html}
  },el=>el.dataset.liveKey);
+ for(const item of rows){const el=[...c.children].find(e=>e.dataset.liveKey===item.key);if(el)c.appendChild(el)}
 }
 
 function buildInner(run){
