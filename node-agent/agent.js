@@ -238,7 +238,7 @@ async function localRunnerJobStatus(container) {
         run_url='https://github.com/'+repo+'/actions/runs/'+run_id;
       }
     }
-    return {job_state:state,job_name:job,job_repo:repo,job_run_id:run_id,job_run_url:run_url,console_tail: state==='busy'?scrubConsole(output).slice(-CONSOLE_BYTES):'', console_last_output_at: state==='busy'?(lines.map(v=>v.match(/(?:^|\\s)(\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z)/)?.[1]).filter(Boolean).pop()||''):''};
+    return {job_state:state,job_name:job,job_repo:repo,job_run_id:run_id,job_run_url:run_url,console_tail: state==='busy'?scrubConsole(output).slice(-CONSOLE_BYTES):'', console_last_output_at: state==='busy'?(lines.map(v=>v.match(/(?:^|\s)(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)/)?.[1]).filter(Boolean).pop()||''):''};
   } catch {return {job_state:'unknown',job_name:'',job_repo:'',job_run_id:'',job_run_url:'',console_tail:'',console_last_output_at:''};}
 }
 async function managedRunnerInventory() {
