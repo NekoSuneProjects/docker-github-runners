@@ -44,7 +44,7 @@ function nodeSnapshot(){
     include_volumes:Boolean(r.include_volumes),last_cleanup_at:r.last_cleanup_at,
     last_cleanup_reclaimed_bytes:Number(r.last_cleanup_reclaimed_bytes||0),
   }));
-  return {nodes,summary:{total:nodes.length,online:nodes.filter(n=>n.online).length,reclaimable_bytes:nodes.reduce((a,n)=>a+Number(n.storage?.reclaimable_bytes||0),0)}};
+  return {nodes,node_workflow_history:nodeWorkflowHistory(),summary:{total:nodes.length,online:nodes.filter(n=>n.online).length,reclaimable_bytes:nodes.reduce((a,n)=>a+Number(n.storage?.reclaimable_bytes||0),0)}};
 }
 function runnerSnapshot(){
   let rows=[];try{rows=db.prepare('SELECT * FROM github_runners ORDER BY api_present DESC, CASE status WHEN \'online\' THEN 0 ELSE 1 END, name COLLATE NOCASE').all()}catch{}
