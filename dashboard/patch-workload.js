@@ -13,8 +13,8 @@ function patchFile(file, replacements) {
 
 patchFile('/app/server.js', [
   [
-    '`);\n\nfunction securityHeaders()',
-    "`);\ntry { db.exec(\"ALTER TABLE nodes ADD COLUMN workload_json TEXT DEFAULT '{}'\"); } catch {}\n\nfunction securityHeaders()",
+    'function securityHeaders()',
+    "try { db.exec(\"ALTER TABLE nodes ADD COLUMN workload_json TEXT DEFAULT '{}'\"); } catch {}\n\nfunction securityHeaders()",
     'nodes workload column',
   ],
   [
