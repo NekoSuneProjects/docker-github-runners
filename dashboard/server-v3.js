@@ -410,7 +410,7 @@ function serveStatic(name, res) {
   fs.readFile(target, (err, data) => {
     if (err) return text(res, 404, 'Not found');
     const ext = path.extname(target), type = ext === '.html' ? 'text/html; charset=utf-8' : ext === '.css' ? 'text/css; charset=utf-8' : ext === '.js' ? 'application/javascript; charset=utf-8' : 'application/octet-stream';
-    res.writeHead(200, { ...securityHeaders(), 'content-type': type, 'cache-control': 'no-cache' }); res.end(data);
+    res.writeHead(200, { ...securityHeaders(), 'content-type': type, 'cache-control': 'no-store, no-cache, must-revalidate', 'pragma': 'no-cache', 'expires': '0' }); res.end(data);
   });
 }
 function serveLogin(res, error = '') {
