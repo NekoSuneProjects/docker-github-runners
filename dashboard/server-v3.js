@@ -110,6 +110,25 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_cleanup_node_time ON cleanup_commands(node_id, created_at DESC);
 `);
 
+db.exec(`CREATE TABLE IF NOT EXISTS node_scheduling_policies (
+  node_id TEXT PRIMARY KEY,
+  max_slots INTEGER NOT NULL DEFAULT 0,
+  cpu_per_slot INTEGER NOT NULL DEFAULT 2,
+  ram_gb_per_slot INTEGER NOT NULL DEFAULT 4,
+  FOREIGN KEY(node_id) REFERENCES nodes(id) ON DELETE CASCADE
+)`);
+
+function nodePolicy(id) {
+  return db.prepare('SELECT max_slots,cpu_per_slot,ram_gb_per_slot FROM node_scheduling_policies WHERE node_id=?').get(id) || null;
+}
+function nodeScheduling(row) {
+  const m = parseJson(row.metrics_json, {});
+  const p = nodePolicy(row.id) || {max_slots:0,cpu_per_slot:2,ram_gb_per_slot:4};
+  const cpu = Math.max(1,Math.floor((Math.max(1,Number(m.cpu_count||1)-1))/p.cpu_per_slot));
+  const ramGb = Number(m.memory_total||0)/(1024**3);
+  const ram = Math.max(1,Math.floor(Math.max(1,ramGb-2)/p.ram_gb_per_slot));
+  return {mode:p.max_slots?'capped-auto':'auto',max_slots:p.max_slots,cpu_per_slot:p.cpu_per_slot,ram_gb_per_slot:p.ram_gb_per_slot,capacity:Math.max(1,Math.min(p.max_slots||Infinity,cpu,ram))};
+}
 function securityHeaders() {
   return {
     'x-content-type-options': 'nosniff',
@@ -306,7 +325,7 @@ function parseJson(value, fallback) { try { return JSON.parse(value); } catch { 
 function nodeOnline(lastSeen) { return Date.now() - new Date(lastSeen).getTime() <= NODE_OFFLINE_SECONDS * 1000; }
 function publicNode(row) {
   const storage = parseJson(row.storage_json, {}), metrics = parseJson(row.metrics_json, {});
-  return { id: row.id, name: row.name, location: row.location, runner_name: row.runner_name, labels: parseJson(row.labels_json, []), agent_version: row.agent_version, hostname: row.hostname, platform: row.platform, arch: row.arch, kernel: row.kernel, uptime_seconds: row.uptime_seconds, metrics, storage, log_file: row.log_file, sent_at: row.sent_at, last_seen: row.last_seen, online: nodeOnline(row.last_seen), runner_busy: row.runner_busy === null ? null : Boolean(row.runner_busy), auto_cleanup: Boolean(row.auto_cleanup), include_volumes: Boolean(row.include_volumes), last_cleanup_at: row.last_cleanup_at, last_cleanup_reclaimed_bytes: Number(row.last_cleanup_reclaimed_bytes || 0) };
+  return { id: row.id, name: row.name, location: row.location, runner_name: row.runner_name, labels: parseJson(row.labels_json, []), agent_version: row.agent_version, hostname: row.hostname, platform: row.platform, arch: row.arch, kernel: row.kernel, uptime_seconds: row.uptime_seconds, metrics, storage, scheduling: nodeScheduling(row), scheduling_policy: nodePolicy(row.id), log_file: row.log_file, sent_at: row.sent_at, last_seen: row.last_seen, online: nodeOnline(row.last_seen), runner_busy: row.runner_busy === null ? null : Boolean(row.runner_busy), auto_cleanup: Boolean(row.auto_cleanup), include_volumes: Boolean(row.include_volumes), last_cleanup_at: row.last_cleanup_at, last_cleanup_reclaimed_bytes: Number(row.last_cleanup_reclaimed_bytes || 0) };
 }
 function normalizeNodePayload(body) {
   const metrics = body.metrics && typeof body.metrics === 'object' ? body.metrics : {};
@@ -397,6 +416,11 @@ const server = http.createServer(async (req, res) => {
   try {
     if (url.pathname === '/healthz') return json(res, 200, { ok: true });
     if (url.pathname === '/internal/nodes/heartbeat' && req.method === 'POST') return receiveHeartbeat(req, res);
+    if (url.pathname === '/internal/nodes/scheduling' && req.method === 'GET') {
+      if (!nodeAuthorized(req)) return json(res, 401, { error: 'Invalid node token' });
+      const id = sanitizeNodeId(url.searchParams.get('id'));
+      return json(res, 200, { policy: nodePolicy(id) });
+    }
     if (url.pathname === '/login' && req.method === 'GET') return readSession(req) ? redirect(res, '/') : serveLogin(res);
     if (url.pathname === '/login' && req.method === 'POST') {
       if (loginRateLimited(req)) return serveLogin(res, 'Too many failed attempts. Try again later.');
@@ -412,6 +436,18 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/health') return json(res, 200, { ok: true, org: GITHUB_ORG, db_file: DB_FILE, db_bytes: fs.statSync(DB_FILE).size, log_retention_days: LOG_RETENTION_DAYS });
     if (url.pathname === '/api/overview') return json(res, 200, await getOverview());
     if (url.pathname === '/api/nodes') return json(res, 200, getNodesSummary());
+    if (url.pathname === '/api/node/scheduling' && req.method === 'POST') {
+      const body = await readJsonBody(req), id = sanitizeNodeId(body.id);
+      if (!db.prepare('SELECT id FROM nodes WHERE id=?').get(id)) return json(res, 404, { error: 'Node not found' });
+      const valid=(x,min,max)=>Number.isInteger(x)&&x>=min&&x<=max;
+      if (!valid(body.max_slots,0,128)||!valid(body.cpu_per_slot,1,128)||!valid(body.ram_gb_per_slot,1,512))
+        return json(res,400,{error:'Invalid scheduling policy'});
+      db.prepare(`INSERT INTO node_scheduling_policies(node_id,max_slots,cpu_per_slot,ram_gb_per_slot)
+        VALUES(?,?,?,?) ON CONFLICT(node_id) DO UPDATE SET
+        max_slots=excluded.max_slots,cpu_per_slot=excluded.cpu_per_slot,ram_gb_per_slot=excluded.ram_gb_per_slot`)
+        .run(id,body.max_slots,body.cpu_per_slot,body.ram_gb_per_slot);
+      return json(res, 200, {ok:true,policy:nodePolicy(id)});
+    }
     if (url.pathname === '/api/node') {
       const id = sanitizeNodeId(url.searchParams.get('id')), row = db.prepare('SELECT * FROM nodes WHERE id=?').get(id);
       if (!row) return json(res, 404, { error: 'Node not found' });
