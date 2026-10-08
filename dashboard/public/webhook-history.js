@@ -4,6 +4,7 @@ const $=id=>document.getElementById(id);
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let deliveries=[];
 let chosen=null;
+let websocketReceived=false;
 const style=document.createElement('style');
 style.textContent='.webhook-row{cursor:pointer}.webhook-row:hover{background:rgba(100,190,150,.09)}.webhook-json{max-height:55vh;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;background:#080f18;color:#c8f4d7;padding:14px;border:1px solid #305344;border-radius:8px;font:11px/1.6 ui-monospace,monospace}.webhook-kv{display:grid;grid-template-columns:minmax(110px,1fr) 2fr;gap:7px;padding:7px;border-bottom:1px solid #253447;font-size:12px;overflow-wrap:anywhere}.webhook-kv span{color:#94a4b8}.webhook-json-controls{display:flex;gap:8px;margin:10px 0;flex-wrap:wrap}';
 document.head.appendChild(style);
@@ -20,6 +21,14 @@ function flatten(value,prefix='',out=[],depth=0){
   }
  }
  return out;
+}
+function applyDeliveries(next){
+ deliveries=Array.isArray(next)?next:[];
+ render();
+ if(chosen&&$('drawer')?.classList.contains('open')&&$('webhookParsed')){
+  const updated=deliveries.find(d=>d.id===chosen.id);
+  if(updated&&JSON.stringify(updated.payload)!==JSON.stringify(chosen.payload))openDelivery(updated.id);
+ }
 }
 function render(){
  const rows=$('webhookRows');if(!rows)return;
@@ -44,7 +53,7 @@ function openDelivery(id){
  $('drawer')?.classList.add('open');
 }
 document.addEventListener('input',e=>{if(e.target?.id==='webhookFilter')render()});
-window.addEventListener('message',()=>{});
-window.addEventListener('neko-webhook-deliveries',e=>{deliveries=Array.isArray(e.detail?.deliveries)?e.detail.deliveries:[];render()});
-fetch('/api/github/webhook-deliveries',{credentials:'same-origin',cache:'no-store'}).then(r=>r.ok?r.json():Promise.reject(Error('HTTP '+r.status))).then(x=>{deliveries=x.deliveries||[];render()}).catch(err=>{if($('webhookRows'))$('webhookRows').innerHTML='<tr><td colspan="7" class="empty">'+esc(err.message)+'</td></tr>'});
+
+window.addEventListener('neko-webhook-deliveries',e=>{websocketReceived=true;applyDeliveries(e.detail?.deliveries)});
+fetch('/api/github/webhook-deliveries',{credentials:'same-origin',cache:'no-store'}).then(r=>r.ok?r.json():Promise.reject(Error('HTTP '+r.status))).then(x=>{if(!websocketReceived)applyDeliveries(x.deliveries||[])}).catch(err=>{if(!websocketReceived&&$('webhookRows'))$('webhookRows').innerHTML='<tr><td colspan="7" class="empty">'+esc(err.message)+'</td></tr>'});
 })();
