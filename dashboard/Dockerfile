@@ -21,8 +21,10 @@ COPY patch-workload.js /app/patch-workload.js
 COPY patch-workflow-discovery.js /app/patch-workflow-discovery.js
 COPY public /app/public
 COPY entrypoint.sh /usr/local/bin/dashboard-entrypoint.sh
+COPY migrate.js /app/migrate.js
 
-RUN node --check /app/patch-workload.js \
+RUN node --check /app/migrate.js \\
+    && node --check /app/patch-workload.js \
     && node --check /app/patch-workflow-discovery.js \
     && node --check /app/public/workload-ui.js \
     && node /app/patch-workflow-discovery.js \
