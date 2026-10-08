@@ -22,6 +22,21 @@ const ROTATE_MS = Math.max(60000, Number(process.env.NODE_SLOT_ROTATE_SECONDS ||
 let lastRotation = 0;
 let rotationCursor = 0;
 const RECONCILE_SECONDS = Math.max(30, Math.min(Number(process.env.NODE_FLEET_RECONCILE_SECONDS || 120), 1800));
+const IMAGE_PULL_SECONDS = Math.max(300, Math.min(Number(process.env.NODE_RUNNER_IMAGE_PULL_SECONDS || 1800), 86400));
+let lastImagePullAt = 0;
+let imagePullInProgress = false;
+async function refreshRunnerImage() {
+  if (imagePullInProgress || Date.now()-lastImagePullAt < IMAGE_PULL_SECONDS*1000) return;
+  imagePullInProgress=true;
+  lastImagePullAt=Date.now();
+  try {
+    const before=(await exec('docker',['image','inspect','-f','{{.Id}}',RUNNER_IMAGE],15000).catch(()=>'')).trim();
+    await exec('docker',['pull',RUNNER_IMAGE],180000);
+    const after=(await exec('docker',['image','inspect','-f','{{.Id}}',RUNNER_IMAGE],15000)).trim();
+    if(before!==after)console.log('[fleet] runner image updated; idle runner containers will be replaced by reconciliation (busy jobs are preserved)');
+  } catch(err){console.warn('[fleet] runner image pull failed: '+(err.output||err.message))}
+  finally{imagePullInProgress=false}
+}
 const UPDATE_ON_START = String(process.env.RUNNER_UPDATE_ON_START || 'true');
 const ENABLE_MULTIARCH = String(process.env.ENABLE_MULTIARCH_ON_START || 'true');
 const MULTIARCH_PLATFORMS = String(process.env.MULTIARCH_PLATFORMS || 'arm64,amd64');
@@ -498,6 +513,7 @@ async function removeUnknownRunners(desired, targetByKey) {
 async function reconcile() {
   if (stopping) return;
   try {
+    await refreshRunnerImage();
     const capabilities = await detectCapabilities();
     await refreshSlotPolicy();
     const targets = await discoverTargets();
