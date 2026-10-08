@@ -57,8 +57,10 @@ async function reposToSync() {
   return [...new Set([...active, ...discovered, ...stored])].slice(0, MAX_REPOS);
 }`;
 
-if (!source.includes(oldReposToSync)) throw new Error('workflow discovery patch: reposToSync anchor not found');
-source = source.replace(oldReposToSync, newReposToSync);
+if (!source.includes('APP_WORKFLOW_DISCOVERY_V2')) {
+  if (!source.includes(oldReposToSync)) throw new Error('workflow discovery patch: reposToSync anchor not found');
+  source = source.replace(oldReposToSync, newReposToSync);
+}
 
 const webhookAnchor = `process.on('neko:github-webhook', payload => {`;
 const nodeListener = `const NODE_WORKFLOW_SYNC_SECONDS = Math.max(30, Math.min(Number(process.env.DASHBOARD_NODE_WORKFLOW_SYNC_SECONDS || 60), 600));
