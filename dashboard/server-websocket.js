@@ -13,6 +13,7 @@ const LOGIN_PASS = process.env.DASHBOARD_PASSWORD || '';
 const LOGIN_PASS_SHA256 = String(process.env.DASHBOARD_PASSWORD_SHA256 || '').trim().toLowerCase();
 const SESSION_SECRET = process.env.DASHBOARD_SESSION_SECRET || '';
 const WEBHOOK_SECRET = String(process.env.DASHBOARD_GITHUB_WEBHOOK_SECRET || '');
+const NODE_WORKFLOW_DATA_ENABLED = !/^(0|false|no|off)$/i.test(String(process.env.DASHBOARD_NODE_WORKFLOW_DATA_ENABLED || 'true'));
 const NODE_OFFLINE_SECONDS = Math.max(15, Math.min(Number(process.env.DASHBOARD_NODE_OFFLINE_SECONDS || 45), 3600));
 const WS_PING_SECONDS = Math.max(10, Math.min(Number(process.env.DASHBOARD_WS_PING_SECONDS || 30), 120));
 const authConfigured = Boolean(LOGIN_USER && (LOGIN_PASS || LOGIN_PASS_SHA256));
@@ -77,7 +78,7 @@ function nodeSnapshot(){
     include_volumes:Boolean(r.include_volumes),last_cleanup_at:r.last_cleanup_at,
     last_cleanup_reclaimed_bytes:Number(r.last_cleanup_reclaimed_bytes||0),
   }));
-  return {nodes,node_workflow_history:nodeWorkflowHistory(),summary:{total:nodes.length,online:nodes.filter(n=>n.online).length,reclaimable_bytes:nodes.reduce((a,n)=>a+Number(n.storage?.reclaimable_bytes||0),0)}};
+  return {nodes,node_workflow_enabled:NODE_WORKFLOW_DATA_ENABLED,node_workflow_history:NODE_WORKFLOW_DATA_ENABLED?nodeWorkflowHistory():[],summary:{total:nodes.length,online:nodes.filter(n=>n.online).length,reclaimable_bytes:nodes.reduce((a,n)=>a+Number(n.storage?.reclaimable_bytes||0),0)}};
 }
 function runnerSnapshot(){
   let rows=[];try{rows=db.prepare('SELECT * FROM github_runners ORDER BY api_present DESC, CASE status WHEN \'online\' THEN 0 ELSE 1 END, name COLLATE NOCASE').all()}catch{}
@@ -98,7 +99,7 @@ function overviewSnapshot(){
   const runners=runnerSnapshot(),wf=workflowSnapshot();
   const runs=wf.runs||[];const oneDay=Date.now()-86400000;
   return {
-    generated_at:new Date().toISOString(),runners,runs,node_workflow_history:nodeWorkflowHistory(),active_jobs:wf.active_jobs||[],repos:[...new Set(runs.map(r=>r.repo))],
+    generated_at:new Date().toISOString(),runners,runs,node_workflow_enabled:NODE_WORKFLOW_DATA_ENABLED,node_workflow_history:NODE_WORKFLOW_DATA_ENABLED?nodeWorkflowHistory():[],active_jobs:wf.active_jobs||[],repos:[...new Set(runs.map(r=>r.repo))],
     jobs_by_run:wf.jobs_by_run||{},workflow_sync:wf.sync||{},
     summary:{
       runners_total:runners.length,runners_online:runners.filter(r=>r.status==='online').length,
