@@ -61,7 +61,7 @@ function overviewSnapshot(){
   const runs=wf.runs||[];const oneDay=Date.now()-86400000;
   return {
     generated_at:new Date().toISOString(),runners,runs,active_jobs:wf.active_jobs||[],repos:[...new Set(runs.map(r=>r.repo))],
-    jobs_by_run:wf.jobs_by_run||{},
+    jobs_by_run:wf.jobs_by_run||{},workflow_sync:wf.sync||{},
     summary:{
       runners_total:runners.length,runners_online:runners.filter(r=>r.status==='online').length,
       runners_busy:runners.filter(r=>r.busy).length,
