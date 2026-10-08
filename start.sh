@@ -518,11 +518,9 @@ echo
 echo "Starting GitHub Actions Runner..."
 echo
 
-if [[ "${NODE_SHARED_JOB_LOCK:-false}" =~ ^(1|true|yes|on)$ ]]; then
-    export ACTIONS_RUNNER_HOOK_JOB_STARTED="/opt/neko-runner-hooks/job-started.sh"
-    export ACTIONS_RUNNER_HOOK_JOB_COMPLETED="/opt/neko-runner-hooks/job-completed.sh"
-    echo "Shared physical-node job lock enabled: ${NODE_SHARED_LOCK_DIR:-/runner-lock}"
-fi
+# Concurrency is controlled by the fleet agent's registered runner slots.
+# Never install job-started hooks that block jobs after GitHub assigns them.
+unset ACTIONS_RUNNER_HOOK_JOB_STARTED ACTIONS_RUNNER_HOOK_JOB_COMPLETED
 
 ./run.sh &
 RUNNER_PID=$!
