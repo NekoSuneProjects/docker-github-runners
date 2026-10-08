@@ -326,6 +326,45 @@ async function refreshActiveSteps(){
 }
 const stepTimer=setInterval(()=>refreshActiveSteps().catch(err=>console.warn('[workflow-store] step poll: '+err.message)),STEP_POLL_MS);
 stepTimer.unref();
+// SQLite survives container restarts, but completion webhooks received during
+// downtime do not. Check known nonterminal runs directly (not via the slow
+// rotating repository sweep) before displaying them as active indefinitely.
+const ACTIVE_RECONCILE_SECONDS=Math.max(60,Math.min(Number(process.env.DASHBOARD_GITHUB_ACTIVE_RECONCILE_SECONDS||120),900));
+const ACTIVE_RECONCILE_LIMIT=Math.max(1,Math.min(Number(process.env.DASHBOARD_GITHUB_ACTIVE_RECONCILE_RUNS||12),30));
+let reconcilingActive=false, activeRunCursor=0;
+async function reconcileActiveRuns(reason='periodic'){
+ if(reconcilingActive||rateLimitUntil>Date.now())return;
+ const rows=db.prepare("SELECT repo,run_id FROM github_live_runs WHERE status IN ('queued','in_progress','waiting','pending','requested') ORDER BY updated_at DESC LIMIT 100").all();
+ if(!rows.length)return;
+ reconcilingActive=true;
+ let checked=0,closed=0;
+ try{
+  const count=Math.min(ACTIVE_RECONCILE_LIMIT,rows.length);
+  for(let i=0;i<count;i++){
+   const row=rows[(activeRunCursor+i)%rows.length];
+   if(rateLimitUntil>Date.now())break;
+   const parts=row.repo.split('/');
+   if(parts.length!==2)continue;
+   try{
+    const data=await gh(`/repos/${encodeURIComponent(parts[0])}/${encodeURIComponent(parts[1])}/actions/runs/${row.run_id}?neko_active_reconcile=${Math.floor(Date.now()/(ACTIVE_RECONCILE_SECONDS*1000))}`);
+    if(Number(data.id)!==Number(row.run_id))continue;
+    const wasActive=db.prepare('SELECT status FROM github_live_runs WHERE repo=? AND run_id=?').get(row.repo,row.run_id);
+    upsertRun(normalizeRun(data,row.repo));
+    checked++;
+    if(wasActive?.status!=='completed'&&data.status==='completed')closed++;
+   }catch(err){
+    console.warn('[workflow-store] active reconciliation '+row.repo+'#'+row.run_id+': '+err.message);
+    if(rateLimitUntil>Date.now())break;
+   }
+  }
+  activeRunCursor=(activeRunCursor+count)%rows.length;
+  emitIfChanged('active-run-reconcile-'+reason);
+  if(checked)console.log('[workflow-store] active reconciliation '+reason+': checked='+checked+' newly_completed='+closed);
+ }finally{reconcilingActive=false}
+}
+setTimeout(() => reconcileActiveRuns('startup').catch(err=>console.warn('[workflow-store] startup reconcile: '+err.message)), 1000).unref();
+const activeReconcileTimer=setInterval(()=>reconcileActiveRuns().catch(err=>console.warn('[workflow-store] periodic reconcile: '+err.message)),ACTIVE_RECONCILE_SECONDS*1000);
+activeReconcileTimer.unref();
 setTimeout(() => sync('startup').catch(() => {}), 2500).unref();
 const timer = setInterval(() => sync('periodic').catch(() => {}), SYNC_SECONDS * 1000);
 timer.unref();
