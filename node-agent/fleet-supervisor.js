@@ -380,6 +380,8 @@ async function detectCapabilities() {
   const memoryBytes = hostMemoryBytes();
   const ramGb = memoryBytes / (1024 ** 3);
   const gpu = await detectGpu();
+  const archRaw=String(os.arch()).toLowerCase();
+  const arch=archRaw==='arm64'||archRaw==='aarch64'?'arm64':archRaw==='x64'||archRaw==='amd64'?'amd64':archRaw;
   const storageGb = hostStorageGb();
   let size = CAPACITY_OVERRIDE;
   if (!['small', 'medium', 'large'].includes(size)) {
@@ -388,7 +390,8 @@ async function detectCapabilities() {
     else if (cpu >= LARGE_MIN_CPU && ramGb >= LARGE_MIN_RAM_GB && (storageGb===null || storageGb>=LARGE_MIN_STORAGE_GB)) size = 'large';
     else size = 'medium';
   }
-  const labels = new Set(csv(LABELS).filter(label => !/^neko-(?:any|size-(?:small|medium|large)|lite|build|heavy|gpu)$/i.test(label)));
+  const labels = new Set(csv(LABELS).filter(label => !/^neko-(?:any|size-(?:small|medium|large)|lite|build|heavy|gpu|arch-[a-z0-9_-]+)$/i.test(label)));
+  labels.add(`neko-arch-${arch}`);
   labels.add(`neko-size-${size}`);
   if (size !== 'small') labels.add('neko-any');
   if (size === 'small') labels.add('neko-lite');
@@ -396,7 +399,7 @@ async function detectCapabilities() {
   if (size === 'large') labels.add('neko-heavy');
   if (gpu) labels.add('neko-gpu');
   return {
-    cpu, memory_bytes: memoryBytes, ram_gb: Number(ramGb.toFixed(1)), storage_gb: storageGb===null?null:Number(storageGb.toFixed(1)), size, gpu,
+    cpu, arch, memory_bytes: memoryBytes, ram_gb: Number(ramGb.toFixed(1)), storage_gb: storageGb===null?null:Number(storageGb.toFixed(1)), size, gpu,
     labels: [...labels],
     fingerprint: `${size}|${gpu ? 'gpu' : 'cpu'}|${[...labels].sort().join(',')}`,
   };
