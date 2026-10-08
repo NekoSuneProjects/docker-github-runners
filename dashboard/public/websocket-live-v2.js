@@ -10,7 +10,7 @@ const badge=(status,conclusion)=>conclusion||status||'neutral';
 async function api(url,opt={}){const r=await fetch(url,{credentials:'same-origin',cache:'no-store',...opt,headers:{...(opt.body?{'content-type':'application/json'}:{}),...(opt.headers||{})}});if(r.status===401){location='/login';throw Error('Authentication required')}if(!r.ok){let e;try{e=(await r.json()).error}catch{e=await r.text()}throw Error(e||`HTTP ${r.status}`)}return opt.text?r.text():r.json()}
 const style=document.createElement('style');style.textContent=`
 .runner-type{display:inline-flex;align-items:center;border:1px solid #34435c;border-radius:999px;padding:2px 6px;font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;margin-left:5px}.runner-type.self{color:#8be7b7;border-color:#315b49}.runner-type.public{color:#9fc0ff;border-color:#3b527e}.runner-type.external{color:#ffd47e;border-color:#66542a}.live-updated{animation:nekoLivePulse .45s ease}@keyframes nekoLivePulse{0%{box-shadow:0 0 0 0 rgba(111,154,255,.28)}100%{box-shadow:0 0 0 8px rgba(111,154,255,0)}}
- .runner[data-runner-expand]{cursor:pointer}.runner[data-runner-expand]:focus-visible{outline:2px solid #86b7ff}.runner-detail{margin-top:12px;padding:10px;border:1px solid #304462;border-radius:9px;background:#0a1627}.runner-detail-line{font-size:11px;margin:5px 0;overflow-wrap:anywhere}.runner-progress{height:7px;background:#23314a;border-radius:8px;overflow:hidden;margin-top:7px}.runner-progress>i{display:block;height:100%;background:#65b5f3}
+ .runner[data-runner-expand]{cursor:pointer}.runner[data-runner-expand]:focus-visible{outline:2px solid #86b7ff}.runner-detail{margin-top:12px;padding:10px;border:1px solid #304462;border-radius:9px;background:#0a1627}.runner-detail-line{font-size:11px;margin:5px 0;overflow-wrap:anywhere}.runner-progress{height:7px;background:#23314a;border-radius:8px;overflow:hidden;margin-top:7px}.runner-progress>i{display:block;height:100%;background:#65b5f3}.runner-console{background:#050c15;border:1px solid #2c3e55;border-radius:8px;color:#c6ecce;font:11px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;padding:12px;max-height:300px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;margin-top:8px}
 `;document.head.appendChild(style);
 function setStatus(t,on=true){if($('status'))$('status').textContent=t;if($('sideLive'))$('sideLive').textContent=t;if($('liveDot'))$('liveDot').classList.toggle('live',on)}
 function typeLabel(t){return t==='self_hosted'?'Self-hosted':t==='github_hosted'?'GitHub-hosted':t==='external'?'External runner':t==='waiting'?'Waiting':'Unknown'}
@@ -35,6 +35,8 @@ function runnerDetail(r){
  const trusted=/^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/actions\/runs\/\d+(?:\/.*)?$/.test(url);
  return `<div class="runner-detail" data-runner-detail>
  <b>Live runner activity</b>
+ <div class="runner-detail-line" style="margin-top:10px"><b>Live agent console</b> · updated with each node heartbeat</div>
+ <pre class="runner-console">${esc(r.console_tail||'Waiting for runner console output…')}</pre>
  <div class="runner-detail-line">Repository: <b>${esc(repo)}</b></div>
  <div class="runner-detail-line">Workflow: ${esc(run?.name||'Not reported')}</div>
  <div class="runner-detail-line">Job: ${esc(r.job_name||job?.name||'Not reported')}</div>
