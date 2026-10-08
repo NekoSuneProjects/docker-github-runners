@@ -20,6 +20,7 @@ const SLOT_RAM_GB = Math.max(1, Number(process.env.NODE_SLOT_RAM_GB || 4));
 const SLOT_CPU_CORES = Math.max(1, Number(process.env.NODE_SLOT_CPU_CORES || 2));
 const ROTATE_MS = Math.max(60000, Number(process.env.NODE_SLOT_ROTATE_SECONDS || 600) * 1000);
 const ROTATION_ENABLED = /^(1|true|yes|on)$/i.test(process.env.NODE_SLOT_ROTATION_ENABLED || 'false');
+const PRUNE_ENABLED = /^(1|true|yes|on)$/i.test(process.env.NODE_RUNNER_PRUNE_ENABLED || 'false');
 let lastRotation = 0;
 let rotationCursor = 0;
 const RECONCILE_SECONDS = Math.max(30, Math.min(Number(process.env.NODE_FLEET_RECONCILE_SECONDS || 120), 1800));
@@ -525,7 +526,7 @@ async function reconcile() {
     await Promise.all([ensureVolume(WORK_VOLUME), ensureVolume(DIAG_VOLUME)]);
     const desired = new Set(targets.map(targetKey));
     const targetByKey = new Map(targets.map(t => [targetKey(t), t]));
-    await removeUnknownRunners(desired, targetByKey);
+    if (PRUNE_ENABLED) await removeUnknownRunners(desired, targetByKey);
     const capacity = slotCapacity(capabilities);
     let states = await managedStates(targets);
     const busyStates = states.filter(s => s.busy);
@@ -541,7 +542,7 @@ async function reconcile() {
       selected.add(targetKey(target));
     }
     for (const state of states) {
-      if (selected.has(targetKey(state.target)) || state.busy) continue;
+      if (!PRUNE_ENABLED || selected.has(targetKey(state.target)) || state.busy) continue;
       try { await removeIdleRunner(state); }
       catch (err) { console.warn(`[fleet] cannot evict ${state.name}: ${err.output || err.message}; reserving slot`); }
     }
