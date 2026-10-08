@@ -19,6 +19,7 @@ let remoteSlotPolicy = null;
 const SLOT_RAM_GB = Math.max(1, Number(process.env.NODE_SLOT_RAM_GB || 4));
 const SLOT_CPU_CORES = Math.max(1, Number(process.env.NODE_SLOT_CPU_CORES || 2));
 const ROTATE_MS = Math.max(60000, Number(process.env.NODE_SLOT_ROTATE_SECONDS || 600) * 1000);
+const ROTATION_ENABLED = /^(1|true|yes|on)$/i.test(process.env.NODE_SLOT_ROTATION_ENABLED || 'false');
 let lastRotation = 0;
 let rotationCursor = 0;
 const RECONCILE_SECONDS = Math.max(30, Math.min(Number(process.env.NODE_FLEET_RECONCILE_SECONDS || 120), 1800));
@@ -274,7 +275,7 @@ async function listRunners(target) {
 async function prepareRunner(target, name) {
   const { token, base, runners } = await listRunners(target);
   const stale = runners.find(r => r.name === name);
-  if (stale) await githubFetch(`${base}/actions/runners/${stale.id}`, { method: 'DELETE', token });
+  if (stale) throw new Error('Runner name already registered; refusing to delete existing registration for '+name);
   const registration = await githubFetch(`${base}/actions/runners/registration-token`, { method: 'POST', token });
   if (!registration?.token) throw new Error(`GitHub did not return a registration token for ${targetKey(target)}`);
   return {
@@ -306,7 +307,8 @@ async function remoteRunnerBusy(target, name) {
   // Never evict a runner unless GitHub positively confirms it is idle.
   const { runners } = await listRunners(target);
   const runner = runners.find(r => r.name === name);
-  return runner ? Boolean(runner.busy) : false;
+  if (!runner) throw new Error('Runner registration missing for '+name+'; preserving container until status is verified');
+  return Boolean(runner.busy);
 }
 async function refreshSlotPolicy() {
   try {
@@ -436,7 +438,8 @@ async function ensureRunner(target, capabilities) {
         console.log(`[fleet] deferring image/label change for busy runner ${name}`);
         return;
       }
-      await exec('docker', ['rm', '-f', id], 60000);
+      await exec('docker', ['stop', '-t', '30', id], 60000);
+      await exec('docker', ['rm', id], 60000);
       await removeRemoteRunner(target, name);
       id = '';
     } else if (await isRunning(id)) {
@@ -503,7 +506,8 @@ async function removeUnknownRunners(desired, targetByKey) {
     if (!target || !name) continue;
     try {
       if (await remoteRunnerBusy(target, name)) continue;
-      await exec('docker', ['rm', '-f', id], 60000);
+      await exec('docker', ['stop', '-t', '30', id], 60000);
+      await exec('docker', ['rm', id], 60000);
       await removeRemoteRunner(target, name);
     } catch (err) {
       console.warn(`[fleet] preserving ${name} on uncertain status: ${err.message}`);
@@ -525,7 +529,7 @@ async function reconcile() {
     const capacity = slotCapacity(capabilities);
     let states = await managedStates(targets);
     const busyStates = states.filter(s => s.busy);
-    if (Date.now() - lastRotation >= ROTATE_MS) {
+    if (ROTATION_ENABLED && Date.now() - lastRotation >= ROTATE_MS) {
       lastRotation = Date.now();
       rotationCursor = (rotationCursor + 1) % targets.length;
     }
