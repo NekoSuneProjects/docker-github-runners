@@ -206,6 +206,14 @@ async function maybeRecoverStuck(watchdog) {
   }
 }
 
+const CONSOLE_BYTES=Math.max(512,Math.min(Number(process.env.NODE_RUNNER_CONSOLE_BYTES||3072),8192));
+function scrubConsole(v){
+  return String(v||'').replace(/\x1b\[[0-9;]*[A-Za-z]/g,'')
+    .replace(/(gh[pousr]_[A-Za-z0-9_]{12,}|github_pat_[A-Za-z0-9_]{12,})/g,'[REDACTED TOKEN]')
+    .replace(/(Bearer\s+)[A-Za-z0-9._~+/=-]{12,}/gi,'$1[REDACTED]')
+    .replace(/((?:password|secret|token|authorization|api[_-]?key)\s*[:=]\s*)\S+/gi,'$1[REDACTED]')
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g,'');
+}
 async function localRunnerJobStatus(container) {
   try {
     // Standard GitHub Actions runner listener logs describe transitions without GitHub API requests.
@@ -230,8 +238,8 @@ async function localRunnerJobStatus(container) {
         run_url='https://github.com/'+repo+'/actions/runs/'+run_id;
       }
     }
-    return {job_state:state,job_name:job,job_repo:repo,job_run_id:run_id,job_run_url:run_url};
-  } catch {return {job_state:'unknown',job_name:'',job_repo:'',job_run_id:'',job_run_url:''};}
+    return {job_state:state,job_name:job,job_repo:repo,job_run_id:run_id,job_run_url:run_url,console_tail: state==='busy'?scrubConsole(output).slice(-CONSOLE_BYTES):''};
+  } catch {return {job_state:'unknown',job_name:'',job_repo:'',job_run_id:'',job_run_url:'',console_tail:''};}
 }
 async function managedRunnerInventory() {
   try {
