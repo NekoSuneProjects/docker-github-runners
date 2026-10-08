@@ -227,6 +227,7 @@ async function cached(key, ttl, fn) {
   const value = await fn(); cache.set(key, { expires: now + ttl, value }); return value;
 }
 async function githubFetch(apiPath, options = {}) {
+  if (!GITHUB_TOKEN) throw Object.assign(new Error('Legacy REST API disabled: no token configured; use GitHub App SQLite workflow state'), { status: 503 });
   const headers = { Accept: options.accept || 'application/vnd.github+json', 'X-GitHub-Api-Version': API_VERSION, 'User-Agent': 'neko-runner-dashboard/3.0' };
   if (GITHUB_TOKEN) headers.Authorization = `Bearer ${GITHUB_TOKEN}`;
   const response = await fetch(`https://api.github.com${apiPath}`, { method: options.method || 'GET', headers, redirect: 'follow' });
@@ -253,6 +254,21 @@ function normalizeRun(run, repo) {
   return { id: run.id, repo, name: run.name || 'Workflow', display_title: run.display_title || run.name || 'Workflow run', run_number: run.run_number, status: run.status, conclusion: run.conclusion, branch: run.head_branch, actor: run.actor?.login || 'unknown', created_at: run.created_at, updated_at: run.updated_at, html_url: run.html_url };
 }
 async function getOverview() {
+  if (!GITHUB_TOKEN) {
+    // GitHub App mode: avoid 60/hour unauthenticated REST calls.
+    const wf=globalThis.__NEKO_WORKFLOW_STORE__?.snapshot?.()||{runs:[],active_jobs:[]};
+    const runs=wf.runs||[], activeJobs=wf.active_jobs||[];
+    let runners=[];
+    try { runners=db.prepare('SELECT github_id,name,os,status,busy,labels_json FROM github_runners ORDER BY name LIMIT 500').all().map(r=>({
+      id:r.github_id,name:r.name,os:r.os,status:r.status,busy:Boolean(r.busy),labels:parseJson(r.labels_json,[])
+    })); } catch {}
+    const activeRuns=runs.filter(r=>['queued','in_progress','waiting','pending','requested'].includes(String(r.status)));
+    const failed24h=runs.filter(r=>r.conclusion==='failure'&&Date.parse(r.updated_at||r.created_at)>=Date.now()-86400000).length;
+    return {org:GITHUB_ORG,generated_at:new Date().toISOString(),refresh_seconds:REFRESH_SECONDS,
+      runners,runners_error:null,repos:[...new Set(runs.map(r=>r.repo))],runs,active_jobs:activeJobs,
+      summary:{runners_total:runners.length,runners_online:runners.filter(r=>r.status==='online').length,
+      runners_busy:runners.filter(r=>r.busy).length,active_runs:activeRuns.length,failed_24h:failed24h}};
+  }
   return cached('overview', REFRESH_SECONDS * 1000, async () => {
     const repos = await getRepos(); let runners = [], runnersError = null;
     try {
