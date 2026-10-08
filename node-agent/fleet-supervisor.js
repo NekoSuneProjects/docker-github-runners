@@ -45,8 +45,8 @@ const MULTIARCH_PLATFORMS = String(process.env.MULTIARCH_PLATFORMS || 'arm64,amd
 
 const CAPACITY_OVERRIDE = String(process.env.NODE_CAPACITY_CLASS || 'auto').trim().toLowerCase();
 const GPU_OVERRIDE = String(process.env.NODE_GPU || 'auto').trim().toLowerCase();
-const SMALL_MAX_CPU = Math.max(1, Number(process.env.NODE_SMALL_MAX_CPU || 2));
-const SMALL_MAX_RAM_GB = Math.max(1, Number(process.env.NODE_SMALL_MAX_RAM_GB || 4));
+const SMALL_MAX_CPU = Math.max(1, Number(process.env.NODE_SMALL_MAX_CPU || 4));
+const SMALL_MAX_RAM_GB = Math.max(1, Number(process.env.NODE_SMALL_MAX_RAM_GB || 8));
 const LARGE_MIN_CPU = Math.max(2, Number(process.env.NODE_LARGE_MIN_CPU || 8));
 const LARGE_MIN_RAM_GB = Math.max(4, Number(process.env.NODE_LARGE_MIN_RAM_GB || 16));
 
@@ -352,11 +352,16 @@ async function removeIdleRunner(state) {
   return true;
 }
 async function detectGpu() {
-  if (/^(1|true|yes|on|gpu|nvidia)$/i.test(GPU_OVERRIDE)) return true;
+  // A configured Docker runtime is NOT proof of an installed GPU.
+  // Never advertise GPU jobs unless an actual device is detected.
   if (/^(0|false|no|off|none)$/i.test(GPU_OVERRIDE)) return false;
   try {
-    const runtimes = await exec('docker', ['info', '--format', '{{json .Runtimes}}'], 15000);
-    if (/nvidia/i.test(runtimes)) return true;
+    const devices=await exec('sh',['-c','test -e /dev/nvidia0 || test -e /dev/dri/renderD128 || test -e /dev/dri/renderD129'],5000);
+    if(devices!==undefined)return true;
+  } catch {}
+  try {
+    const result=await exec('nvidia-smi',['--query-gpu=name','--format=csv,noheader'],8000);
+    if(String(result).trim())return true;
   } catch {}
   return false;
 }
@@ -371,7 +376,7 @@ async function detectCapabilities() {
     else if (cpu >= LARGE_MIN_CPU && ramGb >= LARGE_MIN_RAM_GB) size = 'large';
     else size = 'medium';
   }
-  const labels = new Set(csv(LABELS));
+  const labels = new Set(csv(LABELS).filter(label => !/^neko-(?:any|size-(?:small|medium|large)|lite|build|heavy|gpu)$/i.test(label)));
   labels.add(`neko-size-${size}`);
   labels.add('neko-any');
   if (size === 'small') labels.add('neko-lite');
