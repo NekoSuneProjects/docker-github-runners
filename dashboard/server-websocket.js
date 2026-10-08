@@ -56,12 +56,16 @@ function runnerSnapshot(){
   }));
 }
 function controlSnapshot(){try{return db.prepare('SELECT node_id,runner_name,desired_state,pending_action,updated_at FROM runner_controls ORDER BY runner_name COLLATE NOCASE').all()}catch{return[]}}
+function nodeWorkflowHistory(){
+ try{return db.prepare("SELECT json,job_state,last_seen FROM node_workflow_history ORDER BY last_seen DESC LIMIT 500").all().map(row=>({...JSON.parse(row.json),history_status:row.job_state,history_updated_at:row.last_seen}))}
+ catch(err){if(!/no such table/.test(err.message))console.warn('[workflow-history] '+err.message);return []}
+}
 function workflowSnapshot(){return globalThis.__NEKO_WORKFLOW_STORE__?.snapshot?.()||{runs:[],jobs_by_run:{},active_jobs:[],sync:{}}}
 function overviewSnapshot(){
   const runners=runnerSnapshot(),wf=workflowSnapshot();
   const runs=wf.runs||[];const oneDay=Date.now()-86400000;
   return {
-    generated_at:new Date().toISOString(),runners,runs,active_jobs:wf.active_jobs||[],repos:[...new Set(runs.map(r=>r.repo))],
+    generated_at:new Date().toISOString(),runners,runs,node_workflow_history:nodeWorkflowHistory(),active_jobs:wf.active_jobs||[],repos:[...new Set(runs.map(r=>r.repo))],
     jobs_by_run:wf.jobs_by_run||{},workflow_sync:wf.sync||{},
     summary:{
       runners_total:runners.length,runners_online:runners.filter(r=>r.status==='online').length,
