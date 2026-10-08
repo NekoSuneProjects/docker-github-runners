@@ -40,6 +40,7 @@ function liveBase(el,html){
   pulse(el);
  }
 }
+function nodeWorkflowsEnabled(){return live.nodes?.node_workflow_enabled!==false && live.overview?.node_workflow_enabled!==false}
 function fleetContainers(){return (live.nodes?.nodes||[]).filter(n=>n.online).flatMap(n=>(n.fleet_runners||[]).filter(r=>r.running).map(r=>({...r,node_name:n.name})))}
 function renderMetrics(){const o=live.overview?.summary||{},n=live.nodes?.summary||{},fleet=fleetContainers(),hasGitHub=fleet.length===0&&Number(o.runners_total||0)>0;if($('mRunners'))$('mRunners').textContent=hasGitHub?o.runners_total:fleet.length;if($('mRunnersSub'))$('mRunnersSub').textContent=hasGitHub?`${o.runners_online??0} online`:`${fleet.length} active containers`;if($('mBusy'))$('mBusy').textContent=fleet.length?fleet.filter(r=>r.job_state==='busy').length:(o.runners_busy??'–');if($('mNodes'))$('mNodes').textContent=n.total??'–';if($('mNodesSub'))$('mNodesSub').textContent=`${n.online??'–'} online`;if($('mClean'))$('mClean').textContent=fmtBytes(n.reclaimable_bytes);if($('mActive'))$('mActive').textContent=o.active_runs??'–';if($('mFailures'))$('mFailures').textContent=o.failed_24h??'–'}
 function runnerInner(r){const work=(live.overview?.active_jobs||[]).find(j=>j.runner_name===r.name),node=nodeByRunner(r.name);return`<div class="runner-top"><div class="runner-name">${esc(r.name)}</div><span class="badge ${r.status==='online'?(r.busy?'busy':'idle'):'offline'}">${r.status==='online'?(r.busy?'busy':'idle'):'offline'}</span></div><div class="runner-labels">${esc(r.os)} • ${esc((r.labels||[]).join(', '))}<span class="runner-type self">Self-hosted</span></div>${work?`<div class="node-sub" style="margin-top:7px">${esc(work.repo)} • ${esc(work.name||'job')} • ${esc(node?.name||'node not matched')}</div>`:''}`}
@@ -124,8 +125,8 @@ function renderWorkflows(){
  const remote=[...(live.overview?.runs||[])].sort((a,b)=>Date.parse(b.created_at||0)-Date.parse(a.created_at||0));
  const norm=v=>String(v||'').toLowerCase().replace(/^neko-runner-/,'').replace(/[^a-z0-9]/g,'');
  const remoteBusy=new Set((live.overview?.active_jobs||[]).filter(j=>j.status==='in_progress').map(j=>norm(j.runner_name)).filter(Boolean));
- const liveLocal=fleetContainers().filter(r=>r.job_state==='busy'&&!remoteBusy.has(norm(r.container)));
- const stored=(live.nodes?.node_workflow_history||live.overview?.node_workflow_history||[]);
+ const liveLocal=nodeWorkflowsEnabled()?fleetContainers().filter(r=>r.job_state==='busy'&&!remoteBusy.has(norm(r.container))):[];
+ const stored=nodeWorkflowsEnabled()?(live.nodes?.node_workflow_history||live.overview?.node_workflow_history||[]):[];
  const historical=stored.filter(r=>!remoteBusy.has(norm(r.container))&&!liveLocal.some(x=>x.container===r.container&&x.job_started_at===r.job_started_at)).map(r=>({...r,history_archived:true}));
  const local=[...liveLocal,...historical];
  if(!remote.length&&!local.length){
@@ -170,7 +171,7 @@ function buildInner(run){
 function renderActive(){
  const c=$('activeBuilds');if(!c)return;
  const runs=(live.overview?.runs||[]).filter(r=>['queued','in_progress','waiting','pending','requested'].includes(String(r.status)));
- const fleet=fleetContainers().filter(r=>r.job_state==='busy');
+ const fleet=nodeWorkflowsEnabled()?fleetContainers().filter(r=>r.job_state==='busy'):[];
  const known=new Set((live.overview?.active_jobs||[]).map(j=>String(j.runner_name||'').toLowerCase().replace(/^neko-runner-/,'').replace(/[^a-z0-9]/g,'')));
  const local=fleet.filter(r=>!known.has(String(r.container||'').toLowerCase().replace(/^neko-runner-/,'').replace(/[^a-z0-9]/g,'')));
  if(!runs.length&&!local.length){c.innerHTML='<div class="empty">No active workflows or busy agent runners reported.</div>';return}
