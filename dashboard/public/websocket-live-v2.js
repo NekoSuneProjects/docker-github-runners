@@ -61,9 +61,9 @@ function runnerDetail(r){
  <div class="runner-detail-line" style="margin-top:10px"><b>Runner console</b> · Last actual output: ${r.console_last_output_at?ago(r.console_last_output_at):'timestamp unavailable'} · Heartbeat updates are not necessarily new log lines</div>
  <pre class="runner-console">${esc(r.console_tail||'Waiting for runner console output…')}</pre>
  <div class="runner-detail-line">Repository: <b>${esc(repo)}</b></div>
- <div class="runner-detail-line">Workflow: ${esc(run?.name||job?.workflow_name||'Not reported')}</div>
+ <div class="runner-detail-line">Workflow: ${esc(run?.name||job?.workflow_name||r.job_workflow||'Not reported')}</div>
  <div class="runner-detail-line">Job: ${esc(job?.name||r.job_name||'Not reported')}</div>
- <div class="runner-detail-line">Branch: ${esc(run?.branch||job?.branch||'Unknown')}</div>
+ <div class="runner-detail-line">Branch: ${esc(run?.branch||job?.branch||r.job_branch||'Unknown')}</div>
  <div class="runner-detail-line">Node: ${esc(r.node_name||'Unknown')} · Container: ${esc(r.container||r.name)}</div>
  <div class="runner-detail-line">Runner target: ${esc(r.target||r.name||'Unspecified')} · Status: ${esc(r.job_state||r.status||'Unknown')}</div>
  ${node?`<div class="runner-detail-line">Node load: ${Number(node.metrics?.load_1||0).toFixed(2)} · Memory: ${Number(node.metrics?.memory_used_percent||0).toFixed(0)}% · Cleanable: ${fmtBytes(node.storage?.reclaimable_bytes)}</div>`:'' }
