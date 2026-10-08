@@ -9,9 +9,9 @@ const GITHUB_ORG = String(process.env.GITHUB_ORG || '').trim();
 const GITHUB_TOKEN = process.env.GITHUB_DASHBOARD_TOKEN || process.env.ACCESS_TOKEN || '';
 const DB_FILE = process.env.DASHBOARD_DB_FILE || '/data/dashboard.sqlite';
 const CONFIG_REPOS = String(process.env.DASHBOARD_REPOS || '').split(',').map(v => v.trim()).filter(Boolean).map(v => v.includes('/') ? v.split('/').pop() : v);
-const MAX_REPOS = Math.max(1, Math.min(Number(process.env.DASHBOARD_MAX_REPOS || 12), 50));
+const MAX_REPOS = Math.max(1, Math.min(Number(process.env.DASHBOARD_MAX_REPOS || 100), 500));
 const SYNC_SECONDS = Math.max(60, Math.min(Number(process.env.DASHBOARD_GITHUB_WORKFLOW_SYNC_SECONDS || 180), 3600));
-const RUNS_PER_REPO = Math.max(3, Math.min(Number(process.env.DASHBOARD_GITHUB_WORKFLOW_RUNS_PER_REPO || 8), 30));
+const RUNS_PER_REPO = Math.max(3, Math.min(Number(process.env.DASHBOARD_GITHUB_WORKFLOW_RUNS_PER_REPO || 30), 100));
 const API_VERSION = '2022-11-28';
 
 fs.mkdirSync(path.dirname(DB_FILE), { recursive: true });
@@ -90,8 +90,8 @@ function runnerType(job) {
   const group = String(job.runner_group_name || '');
   if (!name) return 'waiting';
   const known = db.prepare('SELECT github_id FROM github_runners WHERE name=?').get(name);
-  if (known) return 'self_hosted';
-  if (/github actions/i.test(group) || /^github actions\b/i.test(name) || /^hosted agent\b/i.test(name)) return 'github_hosted';
+  if (known || /^neko-runner[-_]/i.test(name) || /self[- ]hosted/i.test(group)) return 'self_hosted';
+  if (/github actions/i.test(group) || /^github actions\b/i.test(name) || /^hosted agent\b/i.test(name) || /^github[- ]hosted$/i.test(name)) return 'github_hosted';
   return 'external';
 }
 function normalizeJob(job, repo, runId) {
@@ -126,8 +126,8 @@ function upsertJob(job) {
     .run(job.repo, job.run_id, job.id, job.status, job.conclusion, job.runner_name, job.runner_group_name, job.runner_type, new Date().toISOString(), JSON.stringify(job));
 }
 function snapshot() {
-  const runs = db.prepare('SELECT json FROM github_live_runs ORDER BY datetime(updated_at) DESC LIMIT 120').all().map(r => JSON.parse(r.json));
-  const jobs = db.prepare('SELECT json FROM github_live_jobs ORDER BY datetime(updated_at) DESC LIMIT 500').all().map(r => JSON.parse(r.json));
+  const runs = db.prepare('SELECT json FROM github_live_runs ORDER BY datetime(updated_at) DESC LIMIT 500').all().map(r => JSON.parse(r.json));
+  const jobs = db.prepare('SELECT json FROM github_live_jobs ORDER BY datetime(updated_at) DESC LIMIT 2000').all().map(r => JSON.parse(r.json));
   const activeJobs = jobs.filter(j => ['queued','in_progress','waiting','pending'].includes(String(j.status)));
   const byRun = {};
   for (const job of jobs) (byRun[String(job.run_id)] ||= []).push(job);
