@@ -30,6 +30,7 @@ function runnerDetail(r){
  const run=(live.overview?.runs||[]).find(x=>String(x.id)===String(job?.run_id));
  const p=run?progress(run):null;
  const repo=r.job_repo||job?.repo||run?.repo||'Not yet reported';
+ const node=(live.nodes?.nodes||[]).find(n=>(n.fleet_runners||[]).some(x=>x.container===r.container))||null;
  const url=r.job_run_url||run?.html_url||'';
  const trusted=/^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/actions\/runs\/\d+(?:\/.*)?$/.test(url);
  return `<div class="runner-detail" data-runner-detail>
@@ -39,6 +40,7 @@ function runnerDetail(r){
  <div class="runner-detail-line">Job: ${esc(r.job_name||job?.name||'Not reported')}</div>
  <div class="runner-detail-line">Branch: ${esc(run?.branch||'Unknown')}</div>
  <div class="runner-detail-line">Node: ${esc(r.node_name||'Unknown')} · Container: ${esc(r.container||r.name)}</div>
+ ${node?`<div class="runner-detail-line">Node load: ${Number(node.metrics?.load_1||0).toFixed(2)} · Memory: ${Number(node.metrics?.memory_used_percent||0).toFixed(0)}% · Cleanable: ${fmtBytes(node.storage?.reclaimable_bytes)}</div>`:'' }
  ${p&&p.total?`<div class="runner-detail-line">Progress: ${p.done}/${p.total} steps (${p.pct}%)</div><div class="runner-progress"><i style="width:${p.pct}%"></i></div><div class="runner-detail-line">Current step: ${esc(p.current?.name||'Awaiting update')}</div>`: '<div class="runner-detail-line">Step progress unavailable until GitHub sends job step details.</div>'}
  ${trusted?`<div class="runner-detail-line"><a href="${esc(url)}" target="_blank" rel="noopener noreferrer">Open GitHub workflow run ↗</a></div>`:''}
  </div>`;
