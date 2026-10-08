@@ -125,7 +125,7 @@ function renderWorkflows(){
  const remoteBusy=new Set((live.overview?.active_jobs||[]).filter(j=>j.status==='in_progress').map(j=>norm(j.runner_name)).filter(Boolean));
  const liveLocal=fleetContainers().filter(r=>r.job_state==='busy'&&!remoteBusy.has(norm(r.container)));
  const stored=(live.nodes?.node_workflow_history||live.overview?.node_workflow_history||[]);
- const historical=stored.filter(r=>!remoteBusy.has(norm(r.container))&&!liveLocal.some(x=>x.container===r.container&&x.job_started_at===r.job_started_at));
+ const historical=stored.filter(r=>!remoteBusy.has(norm(r.container))&&!liveLocal.some(x=>x.container===r.container&&x.job_started_at===r.job_started_at)).map(r=>({...r,history_archived:true}));
  const local=[...liveLocal,...historical];
  if(!remote.length&&!local.length){
   const reason=live.overview?.workflow_sync?.last_error||'No workflows synchronized and no busy node runners currently reported.';
@@ -148,7 +148,7 @@ function renderWorkflows(){
   const html='<td><b>'+esc(localRepo||'Not reported by node')+'</b><div class="node-sub">Local agent</div></td>'+
    '<td>'+esc(r.job_workflow||r.job_name||'Active self-hosted job')+'</td>'+
    '<td>'+esc(r.job_branch||'Unknown')+'</td>'+
-   '<td><span class="badge '+(completed?'success':'busy')+'">'+(completed?'COMPLETED':r.history_status==='in_progress'&&r.job_state!=='busy'?'LAST SEEN BUSY':'IN PROGRESS')+'</span></td>'+
+   '<td><span class="badge '+(completed?'success':'busy')+'">'+(completed?'COMPLETED':r.history_archived?'LAST SEEN BUSY':'IN PROGRESS')+'</span></td>'+
    '<td>'+esc(r.container)+'<div class="node-sub">'+esc(r.node_name||'')+'</div></td>'+
    '<td>'+esc(r.job_actor||'Unknown')+'</td>'+
    '<td>'+esc(started?new Date(started).toLocaleString():'Not reported')+'</td>'+
