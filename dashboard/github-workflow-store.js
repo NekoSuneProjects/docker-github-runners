@@ -23,6 +23,8 @@ const JOB_DETAILS_PER_CYCLE = Math.max(0, Math.min(Number(process.env.DASHBOARD_
 let rateLimitUntil = 0;
 let repoCursor = 0;
 let jobFetches = 0;
+let initialJobBackfill = false;
+const BACKFILL_ON_EMPTY_ONLY = process.env.DASHBOARD_WORKFLOW_BACKFILL_ON_EMPTY_ONLY !== 'false';
 const API_VERSION = '2022-11-28';
 
 fs.mkdirSync(path.dirname(DB_FILE), { recursive: true });
@@ -220,7 +222,7 @@ async function syncRepo(repo) {
     // fetched again. If a run just completed while its cached job still says
     // in_progress/queued, fetch it one final time to close the timeline cleanly.
     if (!active && haveJobs && !unfinished) continue;
-    if (!active && !haveJobs) continue; // Completed runs are indexed without expensive historical job fetches.
+    if (!active && !haveJobs && !initialJobBackfill) continue; // First fill captures runner type, later sync saves API calls.
     jobFetches++;
     try {
       const jobs = await gh(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/actions/runs/${run.id}/jobs?per_page=100`);
@@ -234,13 +236,16 @@ async function sync(reason='periodic', onlyRepo='') {
   if (!APP_MODE && (!GITHUB_ORG || !GITHUB_TOKEN)) return snapshot();
   if (syncing) return syncing;
   if(rateLimitUntil>Date.now())return snapshot();
+  if (!onlyRepo && BACKFILL_ON_EMPTY_ONLY && reason==='periodic' && Number(db.prepare('SELECT COUNT(*) AS n FROM github_live_runs').get().n) > 0) return snapshot();
   syncing = (async () => {
     const attempt = new Date().toISOString();
     db.prepare('UPDATE github_workflow_sync_state SET last_attempt_at=?,last_error=? WHERE singleton=1').run(attempt, '');
     try {
       const repos = onlyRepo ? [onlyRepo.includes('/')?onlyRepo:GITHUB_ORG+'/'+onlyRepo] : await reposToSync();
       upsertRepos(repos, attempt);
-      const selected=onlyRepo?repos:Array.from({length:Math.min(REPOS_PER_CYCLE,repos.length)},(_,i)=>repos[(repoCursor+i)%repos.length]);
+      initialJobBackfill = Number(db.prepare('SELECT COUNT(*) AS n FROM github_live_runs').get().n) === 0;
+      const ordered=[...repos].sort((a,b)=>Number(b.toLowerCase().startsWith('nekosuneprojects/'))-Number(a.toLowerCase().startsWith('nekosuneprojects/')));
+      const selected=onlyRepo?repos:Array.from({length:Math.min(REPOS_PER_CYCLE,ordered.length)},(_,i)=>ordered[(repoCursor+i)%ordered.length]);
       if(!onlyRepo && repos.length)repoCursor=(repoCursor+selected.length)%repos.length;
       jobFetches=0;
       for (const repo of selected) {
