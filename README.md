@@ -289,3 +289,49 @@ After this first lean rebuild, later builds should be substantially quicker than
 Access to `/var/run/docker.sock` effectively grants workflows powerful control over the Docker host. Only allow trusted repositories and trusted workflow changes to target these self-hosted runners.
 
 The dashboard itself does not mount the Docker socket. It only reads GitHub API data, dashboard state, and read-only runner diagnostic data.
+
+
+## Lock-free fleet scheduling (2026)
+
+The fleet agent uses native GitHub Actions runner assignment, without job-start hooks or filesystem locks.
+Only a bounded set of runner containers are registered at a time. Organization runners
+serve the repositories of their organization, while separately registered personal
+repository runners rotate through the remaining available slots.
+
+Configuration on each worker node (agent branch `.env`):
+
+```env
+NODE_MAX_CONCURRENT_JOBS=0
+NODE_SLOT_CPU_CORES=2
+NODE_SLOT_RAM_GB=4
+NODE_SLOT_ROTATE_SECONDS=600
+NODE_FLEET_RECONCILE_SECONDS=120
+```
+
+A maximum concurrency of `0` means automatic calculation. The formula reserves one
+CPU and 2 GiB RAM for the host, then assigns up to one execution slot per 2
+additional CPUs and 4 GiB RAM, with a minimum of one. The optional maximum
+concurrency setting caps the automatic result rather than overriding safety sizing.
+
+GitHub queues work until a runner registered for the relevant scope and labels
+is available. Rotation across idle scope registrations happens on the agent's
+reconciliation interval. Rotation can cause latency for a personal repository
+when slots are shared across many repositories. This is not a global FIFO queue
+and cannot guarantee strict fairness or immediate scheduling.
+
+The dashboard displays the agent-reported capacity and per-slot resource policy.
+Change these values in the worker's environment and redeploy the agent.
+Avoid recreating the fleet agent while runners are busy: fleet shutdown currently
+stops managed runner containers and may interrupt workflows.
+
+**Migration:** rebuild and publish the runner and agent images before restarting
+a node. Existing runner containers must be replaced with the new runner image,
+otherwise the old job-start locking hook remains installed. Verify all existing
+jobs are complete before migration. Unused `*-runner-lock` volumes may be
+removed later after confirming no container mounts them.
+
+**Safeguards and limits:** GitHub API status checks are used before evicting
+runner containers. API failures preserve existing containers. There is still a
+race between status checks and job assignment; use a maintenance window for
+initial migration. The current CPU/RAM policy sizes from total host resources,
+not instantaneous free memory and does not provide cgroup limits or preemption.
