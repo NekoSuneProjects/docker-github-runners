@@ -214,6 +214,28 @@ function scrubConsole(v){
     .replace(/((?:password|secret|token|authorization|api[_-]?key)\s*[:=]\s*)\S+/gi,'$1[REDACTED]')
     .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g,'');
 }
+
+async function localJobMetadata(container) {
+  // GitHub injects these values into job step processes. Never return any
+  // unrelated environment variables or credentials.
+  const script = 'for f in /proc/[0-9]*/environ; do [ -r "$f" ] || continue; tr "\\000" "\\n" < "$f" 2>/dev/null | grep -E "^(GITHUB_REPOSITORY|GITHUB_RUN_ID|GITHUB_WORKFLOW|GITHUB_REF_NAME)=" | head -n 4; printf "\n"; done';
+  try {
+    const output = await exec('docker',['exec','-u','0',container,'sh','-c',script],7000);
+    const groups = output.split(/(?:\r?\n){2,}/);
+    for (const group of groups) {
+      const vals = {};
+      for (const line of group.split(/\r?\n/)) {
+        const m = /^(GITHUB_REPOSITORY|GITHUB_RUN_ID|GITHUB_WORKFLOW|GITHUB_REF_NAME)=(.*)$/.exec(line);
+        if (m) vals[m[1]] = m[2].trim();
+      }
+      if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(vals.GITHUB_REPOSITORY||'') || !/^\d+$/.test(vals.GITHUB_RUN_ID||'')) continue;
+      return {job_repo:vals.GITHUB_REPOSITORY.slice(0,180),job_run_id:vals.GITHUB_RUN_ID.slice(0,40),
+        job_run_url:'https://github.com/'+vals.GITHUB_REPOSITORY+'/actions/runs/'+vals.GITHUB_RUN_ID,
+        job_workflow:String(vals.GITHUB_WORKFLOW||'').slice(0,160),job_branch:String(vals.GITHUB_REF_NAME||'').slice(0,160)};
+    }
+  } catch {}
+  return null;
+}
 async function localRunnerJobStatus(container) {
   try {
     // Standard GitHub Actions runner listener logs describe transitions without GitHub API requests.
@@ -238,7 +260,8 @@ async function localRunnerJobStatus(container) {
         run_url='https://github.com/'+repo+'/actions/runs/'+run_id;
       }
     }
-    return {job_state:state,job_name:job,job_repo:repo,job_run_id:run_id,job_run_url:run_url,console_tail: state==='busy'?scrubConsole(output).slice(-CONSOLE_BYTES):'', console_last_output_at: state==='busy'?(lines.map(v=>v.match(/(?:^|\s)(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)/)?.[1]).filter(Boolean).pop()||''):''};
+    const metadata=state==='busy'?await localJobMetadata(container):null;
+    return {job_state:state,job_name:job,job_repo:metadata?.job_repo||repo,job_run_id:metadata?.job_run_id||run_id,job_run_url:metadata?.job_run_url||run_url,job_workflow:metadata?.job_workflow||'',job_branch:metadata?.job_branch||'',console_tail: state==='busy'?scrubConsole(output).slice(-CONSOLE_BYTES):'', console_last_output_at: state==='busy'?(lines.map(v=>v.match(/(?:^|\s)(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)/)?.[1]).filter(Boolean).pop()||''):''};
   } catch {return {job_state:'unknown',job_name:'',job_repo:'',job_run_id:'',job_run_url:'',console_tail:'',console_last_output_at:''};}
 }
 async function managedRunnerInventory() {
