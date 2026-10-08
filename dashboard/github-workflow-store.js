@@ -291,7 +291,7 @@ const STEP_POLL_LIMIT=Math.max(1,Math.min(Number(process.env.DASHBOARD_GITHUB_ST
 let stepPolling=false,stepCursor=0;
 async function refreshActiveSteps(){
  if(stepPolling||rateLimitUntil>Date.now())return;
- const running=db.prepare("SELECT repo,run_id,job_id,json FROM github_live_jobs WHERE status='in_progress' ORDER BY updated_at DESC LIMIT 30").all();
+ const running=db.prepare(`SELECT j.repo,j.run_id,j.job_id,j.json FROM github_live_jobs j LEFT JOIN github_live_runs r ON r.repo=j.repo AND r.run_id=j.run_id WHERE j.status IN ('in_progress','queued') AND (r.status IS NULL OR r.status<>'completed') ORDER BY j.updated_at DESC LIMIT 30`).all();
  if(!running.length)return;
  stepPolling=true;
  try{
@@ -306,6 +306,15 @@ async function refreshActiveSteps(){
     const data=await gh(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/jobs/${row.job_id}?neko_step_refresh=${Math.floor(Date.now()/STEP_POLL_MS)}`);
     if(Number(data.id)!==Number(row.job_id))continue;
     upsertJob(normalizeJob(data,row.repo,row.run_id));
+    if(data.status==='completed'){
+      const currentRun=db.prepare('SELECT status FROM github_live_runs WHERE repo=? AND run_id=?').get(row.repo,row.run_id);
+      if(currentRun&&currentRun.status!=='completed'){
+        try{
+          const refreshed=await gh(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runs/${row.run_id}?neko_run_refresh=${Math.floor(Date.now()/STEP_POLL_MS)}`);
+          if(Number(refreshed.id)===Number(row.run_id))upsertRun(normalizeRun(refreshed,row.repo));
+        }catch(err){console.warn('[workflow-store] completed run refresh '+row.repo+'#'+row.run_id+': '+err.message)}
+      }
+    }
    }catch(err){
     console.warn('[workflow-store] live steps '+row.repo+'#'+row.job_id+': '+err.message);
     if(rateLimitUntil>Date.now())break;
