@@ -37,6 +37,7 @@ function nodeSnapshot(){
     id:r.id,name:r.name,location:r.location,runner_name:r.runner_name,
     labels:parseJson(r.labels_json,[]),agent_version:r.agent_version,hostname:r.hostname,
     platform:r.platform,arch:r.arch,kernel:r.kernel,uptime_seconds:Number(r.uptime_seconds||0),
+    fleet_runners:parseJson(r.fleet_runners_json,[]),
     metrics:parseJson(r.metrics_json,{}),storage:parseJson(r.storage_json,{}),log_file:r.log_file,
     sent_at:r.sent_at,last_seen:r.last_seen,online:nodeOnline(r.last_seen),
     runner_busy:r.runner_busy===null?null:Boolean(r.runner_busy),auto_cleanup:Boolean(r.auto_cleanup),
