@@ -19,7 +19,9 @@ if [ "$(id -u)" = "0" ]; then
     echo "Dashboard data directory ownership: $(stat -c '%u:%g %a' "$DATA_DIR" 2>/dev/null || true)"
     echo "Starting dashboard as node user..."
 
+    su-exec node node /app/migrate.js
     exec su-exec node "$@"
 fi
 
+node /app/migrate.js
 exec "$@"
