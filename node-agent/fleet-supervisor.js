@@ -14,9 +14,13 @@ const RUNNER_IMAGE = String(process.env.RUNNER_IMAGE || 'ghcr.io/nekosuneproject
 const LABELS = String(process.env.LABELS || process.env.NODE_LABELS || 'docker,buildx,multiarch,builder');
 const WORK_VOLUME = String(process.env.NODE_RUNNER_WORK_VOLUME || `${NODE_ID}-runner-work`);
 const DIAG_VOLUME = String(process.env.NODE_RUNNER_DIAG_VOLUME || `${NODE_ID}-runner-diag`);
-const LOCK_VOLUME = String(process.env.NODE_RUNNER_LOCK_VOLUME || `${NODE_ID}-runner-lock`);
+const SLOT_OVERRIDE = Math.max(0, Number(process.env.NODE_MAX_CONCURRENT_JOBS || 0));
+const SLOT_RAM_GB = Math.max(1, Number(process.env.NODE_SLOT_RAM_GB || 4));
+const SLOT_CPU_CORES = Math.max(1, Number(process.env.NODE_SLOT_CPU_CORES || 2));
+const ROTATE_MS = Math.max(60000, Number(process.env.NODE_SLOT_ROTATE_SECONDS || 600) * 1000);
+let lastRotation = 0;
+let rotationCursor = 0;
 const RECONCILE_SECONDS = Math.max(30, Math.min(Number(process.env.NODE_FLEET_RECONCILE_SECONDS || 120), 1800));
-const LOCK_STALE_SECONDS = Math.max(3600, Number(process.env.NODE_SHARED_LOCK_STALE_SECONDS || 259200));
 const UPDATE_ON_START = String(process.env.RUNNER_UPDATE_ON_START || 'true');
 const ENABLE_MULTIARCH = String(process.env.ENABLE_MULTIARCH_ON_START || 'true');
 const MULTIARCH_PLATFORMS = String(process.env.MULTIARCH_PLATFORMS || 'arm64,amd64');
@@ -282,6 +286,39 @@ async function removeRemoteRunner(target, name) {
   }
 }
 
+async function remoteRunnerBusy(target, name) {
+  // Never evict a runner unless GitHub positively confirms it is idle.
+  const { runners } = await listRunners(target);
+  const runner = runners.find(r => r.name === name);
+  return runner ? Boolean(runner.busy) : false;
+}
+function slotCapacity(caps) {
+  // Reserve system resources. Each runner takes one GitHub job at a time.
+  const cpuSlots = Math.max(1, Math.floor(Math.max(1, caps.cpu - 1) / SLOT_CPU_CORES));
+  const ramSlots = Math.max(1, Math.floor(Math.max(1, caps.ram_gb - 2) / SLOT_RAM_GB));
+  return Math.max(1, Math.min(SLOT_OVERRIDE || Infinity, cpuSlots, ramSlots));
+}
+async function managedStates(targets) {
+  const results = [];
+  for (const target of targets) {
+    const id = await findContainer(target);
+    if (!id || !(await isRunning(id))) continue;
+    const name = runnerName(target);
+    let busy = true; // API uncertainty must never evict a running job.
+    try { busy = await remoteRunnerBusy(target, name); }
+    catch (error) { console.warn(`[fleet] runner status unknown for ${name}: ${error.message}`); }
+    results.push({ target, id, name, busy });
+  }
+  return results;
+}
+async function removeIdleRunner(state) {
+  if (await remoteRunnerBusy(state.target, state.name)) return false;
+  // Recheck immediately before eviction; no forced interruption of known busy jobs.
+  await exec('docker', ['stop', '-t', '30', state.id], 60000);
+  await exec('docker', ['rm', state.id], 60000);
+  await removeRemoteRunner(state.target, state.name);
+  return true;
+}
 async function detectGpu() {
   if (/^(1|true|yes|on|gpu|nvidia)$/i.test(GPU_OVERRIDE)) return true;
   if (/^(0|false|no|off|none)$/i.test(GPU_OVERRIDE)) return false;
@@ -394,13 +431,9 @@ async function ensureRunner(target, capabilities) {
     '-e', `RUNNER_UPDATE_ON_START=${UPDATE_ON_START}`,
     '-e', `ENABLE_MULTIARCH_ON_START=${ENABLE_MULTIARCH}`,
     '-e', `MULTIARCH_PLATFORMS=${MULTIARCH_PLATFORMS}`,
-    '-e', 'NODE_SHARED_JOB_LOCK=true',
-    '-e', 'NODE_SHARED_LOCK_DIR=/runner-lock',
-    '-e', `NODE_SHARED_LOCK_STALE_SECONDS=${LOCK_STALE_SECONDS}`,
     '-v', '/var/run/docker.sock:/var/run/docker.sock',
     '-v', `${WORK_VOLUME}:/work`,
     '-v', `${DIAG_VOLUME}:/actions-runner/_diag`,
-    '-v', `${LOCK_VOLUME}:/runner-lock`,
   ];
   if (target.scope === 'organization') args.push('-e', `GITHUB_ORG=${target.org}`);
   else args.push('-e', `REPO_URL=https://github.com/${target.repo}`);
@@ -435,17 +468,46 @@ async function reconcile() {
     const capabilities = await detectCapabilities();
     const targets = await discoverTargets();
     if (!targets.length) throw new Error('Agent discovered no GitHub runner targets');
-    await Promise.all([ensureVolume(WORK_VOLUME), ensureVolume(DIAG_VOLUME), ensureVolume(LOCK_VOLUME)]);
+    await Promise.all([ensureVolume(WORK_VOLUME), ensureVolume(DIAG_VOLUME)]);
     const desired = new Set(targets.map(targetKey));
     const targetByKey = new Map(targets.map(t => [targetKey(t), t]));
     await removeUnknownRunners(desired, targetByKey);
-    for (const target of targets) {
-      try { await ensureRunner(target, capabilities); }
-      catch (err) { console.error(`[fleet] ${targetKey(target)}: ${err.output || err.message}`); }
+    const capacity = slotCapacity(capabilities);
+    let states = await managedStates(targets);
+    const busyStates = states.filter(s => s.busy);
+    if (Date.now() - lastRotation >= ROTATE_MS) {
+      lastRotation = Date.now();
+      rotationCursor = (rotationCursor + 1) % targets.length;
     }
+    // Keep busy jobs, then allocate remaining slots round-robin among scopes.
+    const rotated = [...targets.slice(rotationCursor), ...targets.slice(0, rotationCursor)];
+    const selected = new Set(busyStates.map(s => targetKey(s.target)));
+    for (const target of rotated) {
+      if (selected.size >= Math.max(capacity, busyStates.length)) break;
+      selected.add(targetKey(target));
+    }
+    for (const state of states) {
+      if (selected.has(targetKey(state.target)) || state.busy) continue;
+      try { await removeIdleRunner(state); }
+      catch (err) { console.warn(`[fleet] cannot evict ${state.name}: ${err.output || err.message}; reserving slot`); }
+    }
+    states = await managedStates(targets);
+    let slotsRemaining = Math.max(0, capacity - states.length);
+    for (const target of rotated) {
+      if (!selected.has(targetKey(target))) continue;
+      try {
+        if (states.some(s => targetKey(s.target) === targetKey(target))) {
+          await ensureRunner(target, capabilities);
+        } else if (slotsRemaining > 0) {
+          await ensureRunner(target, capabilities);
+          slotsRemaining--;
+        }
+      } catch (err) { console.error(`[fleet] ${targetKey(target)}: ${err.output || err.message}`); }
+    }
+    console.log(`[fleet] slots: capacity=${capacity} active=${states.length} busy=${busyStates.length} reserved=${slotsRemaining}; round-robin cursor=${rotationCursor}`);
     const orgCount = targets.filter(v => v.scope === 'organization').length;
     const repoCount = targets.filter(v => v.scope === 'repository').length;
-    console.log(`[fleet] reconciled ${targets.length} target(s): ${orgCount} org(s), ${repoCount} personal repo(s); node=${capabilities.size} cpu=${capabilities.cpu} ram=${capabilities.ram_gb}GB gpu=${capabilities.gpu}; shared concurrency=1`);
+    console.log(`[fleet] reconciled ${targets.length} target(s): ${orgCount} org(s), ${repoCount} personal repo(s); node=${capabilities.size} cpu=${capabilities.cpu} ram=${capabilities.ram_gb}GB gpu=${capabilities.gpu}; slot capacity=${slotCapacity(capabilities)}`);
   } catch (err) {
     console.error(`[fleet] reconcile failed: ${err.output || err.message}`);
   } finally {
