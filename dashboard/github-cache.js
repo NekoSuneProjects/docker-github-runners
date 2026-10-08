@@ -75,9 +75,9 @@ function responseFrom(entry, cacheState = 'hit') {
 }
 
 function updateRate(headers) {
-  const remaining = Number(headers.get('x-ratelimit-remaining'));
-  const limit = Number(headers.get('x-ratelimit-limit'));
-  const reset = Number(headers.get('x-ratelimit-reset'));
+  const remaining = headers.has('x-ratelimit-remaining') ? Number(headers.get('x-ratelimit-remaining')) : NaN;
+  const limit = headers.has('x-ratelimit-limit') ? Number(headers.get('x-ratelimit-limit')) : NaN;
+  const reset = headers.has('x-ratelimit-reset') ? Number(headers.get('x-ratelimit-reset')) : NaN;
   if (Number.isFinite(remaining)) rateRemaining = remaining;
   if (Number.isFinite(limit)) rateLimit = limit;
   if (Number.isFinite(reset) && reset > 0) rateResetAt = reset * 1000;
@@ -92,7 +92,7 @@ function updateRate(headers) {
 }
 
 function isRateLimited(status, headers, bodyText) {
-  const remaining = Number(headers.get('x-ratelimit-remaining'));
+  const remaining = headers.has('x-ratelimit-remaining') ? Number(headers.get('x-ratelimit-remaining')) : NaN;
   return status === 429 ||
     (status === 403 && (remaining === 0 || /rate limit exceeded/i.test(bodyText)));
 }
@@ -172,7 +172,10 @@ globalThis.fetch = async function nekoRateAwareFetch(input, init = {}) {
   if (!isCacheableGithubGet(url, method)) return nativeFetch(input, init);
 
   const accept = String(init?.headers?.Accept || init?.headers?.accept || '');
-  const key = `${method} ${url} accept=${accept}`;
+  const authHeader=String(init?.headers?.Authorization || init?.headers?.authorization || (init?.headers instanceof Headers ? init.headers.get('authorization') : '') || '');
+  // Never share REST cache entries across different App installations/tokens.
+  const authKey=authHeader ? require('crypto').createHash('sha256').update(authHeader).digest('hex').slice(0,24) : 'anonymous';
+  const key = `${method} ${url} accept=${accept} auth=${authKey}`;
   const now = Date.now();
   const cached = responseCache.get(key);
 
