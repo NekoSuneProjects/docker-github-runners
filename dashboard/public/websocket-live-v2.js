@@ -21,26 +21,47 @@ function activeJob(runId){const jobs=jobsFor(runId);return jobs.find(j=>j.status
 function progress(run){const jobs=jobsFor(run.id),steps=jobs.flatMap(j=>(j.steps||[]).map(s=>({...s,job_name:j.name,runner_name:j.runner_name,runner_type:j.runner_type})));const total=steps.length,done=steps.filter(s=>s.status==='completed').length,current=steps.find(s=>s.status==='in_progress')||steps.find(s=>s.status==='queued')||null;let pct=total?Math.round(done/total*100):0;if(run.status==='completed')pct=100;return{jobs,total,done,current,pct,job:activeJob(run.id)}}
 function pulse(el){if(!el)return;el.classList.remove('live-updated');void el.offsetWidth;el.classList.add('live-updated')}
 function keyed(container,items,keyFn,makeFn,updateFn,existingKeyFn){if(!container)return;const old=new Map();for(const child of [...container.children]){let key=child.dataset.liveKey||existingKeyFn?.(child)||'';if(key){child.dataset.liveKey=String(key);old.set(String(key),child)}else if(child.classList.contains('empty'))child.remove()}for(const item of items){const key=String(keyFn(item));let el=old.get(key);if(!el){el=makeFn(item);el.dataset.liveKey=key;container.appendChild(el);pulse(el)}else old.delete(key);updateFn(el,item)}for(const el of old.values())el.remove()}
-function liveBase(el,html){let base=el.querySelector(':scope > .live-base');if(!base){const extras=[...el.children].filter(x=>x.classList?.contains('neko-runner-extra')||x.classList?.contains('neko-row-workflow-controls'));el.innerHTML='<div class="live-base"></div>';base=el.querySelector(':scope > .live-base');for(const x of extras){x.querySelectorAll('[data-rc-bound],[data-wf-bound],[data-delete-bound]').forEach(b=>{delete b.dataset.rcBound;delete b.dataset.wfBound;delete b.dataset.deleteBound});el.appendChild(x)}}if(base.dataset.html!==html){base.dataset.html=html;base.innerHTML=html;pulse(el)}}
+function liveBase(el,html){
+ let base=el.querySelector(':scope > .live-base');
+ if(!base){
+  const extras=[...el.children].filter(x=>x.classList?.contains('neko-runner-extra')||x.classList?.contains('neko-row-workflow-controls'));
+  el.innerHTML='<div class="live-base"></div>';base=el.querySelector(':scope > .live-base');
+  for(const x of extras){x.querySelectorAll('[data-rc-bound],[data-wf-bound],[data-delete-bound]').forEach(b=>{delete b.dataset.rcBound;delete b.dataset.wfBound;delete b.dataset.deleteBound});el.appendChild(x)}
+ }
+ if(base.dataset.html!==html){
+  const oldConsole=base.querySelector('.runner-console');
+  const atBottom=!oldConsole||oldConsole.scrollHeight-oldConsole.scrollTop-oldConsole.clientHeight<=20;
+  const oldScroll=oldConsole?.scrollTop||0;
+  base.dataset.html=html;base.innerHTML=html;
+  const next=base.querySelector('.runner-console');
+  if(next){next.scrollTop=atBottom?next.scrollHeight:oldScroll}
+  pulse(el);
+ }
+}
 function fleetContainers(){return (live.nodes?.nodes||[]).filter(n=>n.online).flatMap(n=>(n.fleet_runners||[]).filter(r=>r.running).map(r=>({...r,node_name:n.name})))}
 function renderMetrics(){const o=live.overview?.summary||{},n=live.nodes?.summary||{},fleet=fleetContainers(),hasGitHub=fleet.length===0&&Number(o.runners_total||0)>0;if($('mRunners'))$('mRunners').textContent=hasGitHub?o.runners_total:fleet.length;if($('mRunnersSub'))$('mRunnersSub').textContent=hasGitHub?`${o.runners_online??0} online`:`${fleet.length} active containers`;if($('mBusy'))$('mBusy').textContent=fleet.length?fleet.filter(r=>r.job_state==='busy').length:(o.runners_busy??'–');if($('mNodes'))$('mNodes').textContent=n.total??'–';if($('mNodesSub'))$('mNodesSub').textContent=`${n.online??'–'} online`;if($('mClean'))$('mClean').textContent=fmtBytes(n.reclaimable_bytes);if($('mActive'))$('mActive').textContent=o.active_runs??'–';if($('mFailures'))$('mFailures').textContent=o.failed_24h??'–'}
 function runnerInner(r){const work=(live.overview?.active_jobs||[]).find(j=>j.runner_name===r.name),node=nodeByRunner(r.name);return`<div class="runner-top"><div class="runner-name">${esc(r.name)}</div><span class="badge ${r.status==='online'?(r.busy?'busy':'idle'):'offline'}">${r.status==='online'?(r.busy?'busy':'idle'):'offline'}</span></div><div class="runner-labels">${esc(r.os)} • ${esc((r.labels||[]).join(', '))}<span class="runner-type self">Self-hosted</span></div>${work?`<div class="node-sub" style="margin-top:7px">${esc(work.repo)} • ${esc(work.name||'job')} • ${esc(node?.name||'node not matched')}</div>`:''}`}
+function matchingJob(r){
+ const jobs=live.overview?.active_jobs||[];
+ const candidates=[r.container,r.name,r.target].filter(Boolean).map(v=>String(v).toLowerCase());
+ return jobs.find(j=>j.runner_name&&candidates.includes(String(j.runner_name).toLowerCase()))||null;
+}
 function runnerDetail(r){
- const job=(live.overview?.active_jobs||[]).find(j=>j.runner_name===r.container||j.runner_name===r.name);
+ const job=matchingJob(r);
  const run=(live.overview?.runs||[]).find(x=>String(x.id)===String(job?.run_id));
  const p=run?progress(run):null;
- const repo=r.job_repo||job?.repo||run?.repo||'Not yet reported';
+ const repo=job?.repo||r.job_repo||run?.repo||'Not yet reported';
  const node=(live.nodes?.nodes||[]).find(n=>(n.fleet_runners||[]).some(x=>x.container===r.container))||null;
- const url=r.job_run_url||run?.html_url||'';
+ const url=run?.html_url||r.job_run_url||(job?.repo&&job?.run_id?'https://github.com/'+job.repo+'/actions/runs/'+job.run_id:'');
  const trusted=/^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/actions\/runs\/\d+(?:\/.*)?$/.test(url);
  return `<div class="runner-detail" data-runner-detail>
  <b>Live runner activity</b>
  <div class="runner-detail-line" style="margin-top:10px"><b>Live agent console</b> · updated with each node heartbeat</div>
  <pre class="runner-console">${esc(r.console_tail||'Waiting for runner console output…')}</pre>
  <div class="runner-detail-line">Repository: <b>${esc(repo)}</b></div>
- <div class="runner-detail-line">Workflow: ${esc(run?.name||'Not reported')}</div>
- <div class="runner-detail-line">Job: ${esc(r.job_name||job?.name||'Not reported')}</div>
- <div class="runner-detail-line">Branch: ${esc(run?.branch||'Unknown')}</div>
+ <div class="runner-detail-line">Workflow: ${esc(run?.name||job?.workflow_name||'Not reported')}</div>
+ <div class="runner-detail-line">Job: ${esc(job?.name||r.job_name||'Not reported')}</div>
+ <div class="runner-detail-line">Branch: ${esc(run?.branch||job?.branch||'Unknown')}</div>
  <div class="runner-detail-line">Node: ${esc(r.node_name||'Unknown')} · Container: ${esc(r.container||r.name)}</div>
  ${node?`<div class="runner-detail-line">Node load: ${Number(node.metrics?.load_1||0).toFixed(2)} · Memory: ${Number(node.metrics?.memory_used_percent||0).toFixed(0)}% · Cleanable: ${fmtBytes(node.storage?.reclaimable_bytes)}</div>`:'' }
  ${p&&p.total?`<div class="runner-detail-line">Progress: ${p.done}/${p.total} steps (${p.pct}%)</div><div class="runner-progress"><i style="width:${p.pct}%"></i></div><div class="runner-detail-line">Current step: ${esc(p.current?.name||'Awaiting update')}</div>`: '<div class="runner-detail-line">Step progress unavailable until GitHub sends job step details.</div>'}
@@ -55,6 +76,7 @@ function renderRunners(){
  const items=fleet.length?fleet.map(r=>({...r,_source:'node'})):github.map(r=>({...r,_source:'github'}));
  if(!items.length){c.innerHTML='<div class="empty">No runner containers reported by connected nodes.</div>';return}
  keyed(c,items,r=>r._source==='github'?'github:'+r.name:'node:'+r.container,()=>{const e=document.createElement('article');e.className='runner';e.tabIndex=0;e.setAttribute('role','button');e.addEventListener('click',ev=>{if(ev.target.closest('a,button,input'))return;const k=e.dataset.liveKey;if(expandedRunners.has(k))expandedRunners.delete(k);else expandedRunners.add(k);renderRunners()});e.addEventListener('keydown',ev=>{if(ev.key==='Enter'||ev.key===' '){ev.preventDefault();e.click()}});return e},(e,r)=>{
+  const current=matchingJob(r);
   const html=r._source==='github'?runnerInner(r):`<div class="runner-top"><div class="runner-name">${esc(r.target||r.container)}</div><span class="badge ${r.job_state==='busy'?'busy':'online'}">${r.job_state==='busy'?'Busy':r.job_state==='idle'?'Idle':'Running'}</span></div><div class="runner-labels">${esc(r.node_name)} • ${esc(r.scope||'runner')} • ${esc(r.container)}</div><div class="node-sub">${r.job_state==='busy'?'Current job: '+esc(r.job_name||'Unknown')+(r.job_repo?' • '+esc(r.job_repo):''):r.job_state==='idle'?'Listener idle':'Container running; job state unknown'} • node-reported</div>`;
   e.dataset.runnerExpand='true';e.setAttribute('aria-expanded',String(expandedRunners.has(e.dataset.liveKey)));
   liveBase(e,html+(expandedRunners.has(e.dataset.liveKey)?runnerDetail(r):'<div class="node-sub" style="margin-top:7px">Click for runner details and progress ▸</div>'));
