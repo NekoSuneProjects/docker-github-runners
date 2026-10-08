@@ -43,6 +43,8 @@ const UPDATE_ON_START = String(process.env.RUNNER_UPDATE_ON_START || 'true');
 const ENABLE_MULTIARCH = String(process.env.ENABLE_MULTIARCH_ON_START || 'true');
 const MULTIARCH_PLATFORMS = String(process.env.MULTIARCH_PLATFORMS || 'arm64,amd64');
 
+const NODE_PRIORITY_ORGS = String(process.env.NODE_PRIORITY_ORGS || '').split(',').map(x=>x.trim().toLowerCase()).filter(Boolean);
+const NODE_REBALANCE_PRIORITY = /^(1|true|yes|on)$/i.test(String(process.env.NODE_REBALANCE_PRIORITY || 'false'));
 const CAPACITY_OVERRIDE = String(process.env.NODE_CAPACITY_CLASS || 'auto').trim().toLowerCase();
 const GPU_OVERRIDE = String(process.env.NODE_GPU || 'auto').trim().toLowerCase();
 const SMALL_MAX_CPU = Math.max(1, Number(process.env.NODE_SMALL_MAX_CPU || 4));
@@ -555,14 +557,18 @@ async function reconcile() {
       rotationCursor = (rotationCursor + 1) % targets.length;
     }
     // Keep busy jobs, then allocate remaining slots round-robin among scopes.
-    const rotated = [...targets.slice(rotationCursor), ...targets.slice(0, rotationCursor)];
+    const rotated = [...targets.slice(rotationCursor), ...targets.slice(0, rotationCursor)].sort((a,b)=>{
+      const ai=a.scope==='organization'?NODE_PRIORITY_ORGS.indexOf(a.org.toLowerCase()):-1;
+      const bi=b.scope==='organization'?NODE_PRIORITY_ORGS.indexOf(b.org.toLowerCase()):-1;
+      return (ai<0?Infinity:ai)-(bi<0?Infinity:bi);
+    });
     const selected = new Set(busyStates.map(s => targetKey(s.target)));
     for (const target of rotated) {
       if (selected.size >= Math.max(capacity, busyStates.length)) break;
       selected.add(targetKey(target));
     }
     for (const state of states) {
-      if (!PRUNE_ENABLED || selected.has(targetKey(state.target)) || state.busy) continue;
+      if ((!PRUNE_ENABLED&&!NODE_REBALANCE_PRIORITY) || selected.has(targetKey(state.target)) || state.busy) continue;
       try { await removeIdleRunner(state); }
       catch (err) { console.warn(`[fleet] cannot evict ${state.name}: ${err.output || err.message}; reserving slot`); }
     }
