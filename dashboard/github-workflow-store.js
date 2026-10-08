@@ -178,6 +178,15 @@ function upsertRepos(repos, now) {
   for (const repo of repos) stmt.run(repo, now);
 }
 function upsertRun(run) {
+  const existing=db.prepare('SELECT json FROM github_live_runs WHERE repo=? AND run_id=?').get(run.repo,run.id);
+  if(existing){
+    const old=JSON.parse(existing.json);
+    // GitHub terminal conclusions are authoritative. Late queued/job events
+    // or stale API snapshots must not reopen a cancelled workflow.
+    if(old.status==='completed' && run.status!=='completed')return;
+    if(old.status==='completed' && old.conclusion && run.status==='completed' && !run.conclusion)return;
+    if(old.status==='completed' && run.status==='completed' && old.conclusion==='cancelled' && run.conclusion && run.conclusion!=='cancelled' && Date.parse(run.updated_at||0)<=Date.parse(old.updated_at||0))return;
+  }
   db.prepare(`INSERT INTO github_live_runs(repo,run_id,status,conclusion,updated_at,json) VALUES(?,?,?,?,?,?)
     ON CONFLICT(repo,run_id) DO UPDATE SET status=excluded.status,conclusion=excluded.conclusion,updated_at=excluded.updated_at,json=excluded.json`)
     .run(run.repo, run.id, run.status, run.conclusion, run.updated_at || new Date().toISOString(), JSON.stringify(run));
@@ -197,7 +206,8 @@ function upsertJob(job) {
 function snapshot() {
   const runs = db.prepare(`SELECT json FROM github_live_runs ORDER BY datetime(json_extract(json, '$.created_at')) DESC, run_id DESC LIMIT 500`).all().map(r => JSON.parse(r.json));
   const jobs = db.prepare('SELECT json FROM github_live_jobs ORDER BY datetime(updated_at) DESC LIMIT 2000').all().map(r => JSON.parse(r.json));
-  const activeJobs = jobs.filter(j => ['queued','in_progress','waiting','pending'].includes(String(j.status)));
+  const terminal=new Set(runs.filter(r=>r.status==='completed').map(r=>String(r.repo)+'|'+r.id));
+  const activeJobs = jobs.filter(j => ['queued','in_progress','waiting','pending'].includes(String(j.status))&&!terminal.has(String(j.repo)+'|'+j.run_id));
   const byRun = {};
   for (const job of jobs) (byRun[String(job.run_id)] ||= []).push(job);
   const state = db.prepare('SELECT last_success_at,last_error,repos_synced FROM github_workflow_sync_state WHERE singleton=1').get() || {};
