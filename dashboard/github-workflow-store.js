@@ -327,12 +327,12 @@ process.on('neko:github-webhook', payload => {
       if(!exists){
         upsertRun({
           id:job.run_id,repo,
-          name:payload.workflow?.name||payload.workflow_name||'GitHub Actions',
-          display_title:payload.workflow?.name||payload.workflow_name||job.name,
+          name:eventJob.workflow_name||payload.workflow?.name||payload.workflow_name||'GitHub Actions',
+          display_title:eventJob.workflow_name||payload.workflow?.name||payload.workflow_name||job.name,
           run_number:Number(payload.run_number||0),
           status:job.status==='completed'?'completed':job.status==='in_progress'?'in_progress':'queued',
           conclusion:job.conclusion||null,
-          branch:payload.workflow_job?.head_branch||payload.repository?.default_branch||'',
+          branch:eventJob.head_branch||'',
           actor:payload.sender?.login||'unknown',
           created_at:payload.workflow_job?.created_at||new Date().toISOString(),
           updated_at:new Date().toISOString(),
