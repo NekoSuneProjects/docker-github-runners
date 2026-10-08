@@ -302,7 +302,21 @@ async function fullSync(reason = 'scheduled') {
   return syncPromise;
 }
 
+function hasLiveFleetHeartbeat() {
+  try {
+    const rows=db.prepare("SELECT last_seen,fleet_runners_json FROM nodes").all();
+    return rows.some(row=>{
+      const seen=Date.parse(row.last_seen||'');
+      if(!Number.isFinite(seen)||Date.now()-seen>45000)return false;
+      const runners=JSON.parse(row.fleet_runners_json||'[]');
+      return Array.isArray(runners)&&runners.length>0;
+    });
+  }catch{return false;}
+}
 function needsSync() {
+  // Fleet heartbeats already provide live runners. Use GitHub inventory when no
+  // healthy node is reporting runners (e.g., agent/VPS offline).
+  if (hasLiveFleetHeartbeat()) return false;
   const count = Number(db.prepare('SELECT COUNT(*) AS count FROM github_runners').get()?.count || 0);
   if (count === 0) return true;
   const state = db.prepare('SELECT last_success_at FROM github_runner_sync_state WHERE singleton=1').get();
