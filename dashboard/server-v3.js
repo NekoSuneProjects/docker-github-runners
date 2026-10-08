@@ -323,14 +323,22 @@ function safeString(value, max = 160) { return String(value ?? '').slice(0, max)
 function safeNumber(value, min = 0, max = Number.MAX_SAFE_INTEGER) { const n = Number(value); return Number.isFinite(n) ? Math.max(min, Math.min(n, max)) : 0; }
 function parseJson(value, fallback) { try { return JSON.parse(value); } catch { return fallback; } }
 function nodeOnline(lastSeen) { return Date.now() - new Date(lastSeen).getTime() <= NODE_OFFLINE_SECONDS * 1000; }
+// Node-agent inventory is authoritative for containers physically hosted on its VPS.
+try { db.exec("ALTER TABLE nodes ADD COLUMN fleet_runners_json TEXT DEFAULT '[]'"); } catch (e) { if (!/duplicate column/i.test(e.message)) throw e; } 
 function publicNode(row) {
   const storage = parseJson(row.storage_json, {}), metrics = parseJson(row.metrics_json, {});
-  return { id: row.id, name: row.name, location: row.location, runner_name: row.runner_name, labels: parseJson(row.labels_json, []), agent_version: row.agent_version, hostname: row.hostname, platform: row.platform, arch: row.arch, kernel: row.kernel, uptime_seconds: row.uptime_seconds, metrics, storage, scheduling: nodeScheduling(row), scheduling_policy: nodePolicy(row.id), log_file: row.log_file, sent_at: row.sent_at, last_seen: row.last_seen, online: nodeOnline(row.last_seen), runner_busy: row.runner_busy === null ? null : Boolean(row.runner_busy), auto_cleanup: Boolean(row.auto_cleanup), include_volumes: Boolean(row.include_volumes), last_cleanup_at: row.last_cleanup_at, last_cleanup_reclaimed_bytes: Number(row.last_cleanup_reclaimed_bytes || 0) };
+  return { fleet_runners: parseJson(row.fleet_runners_json, []), id: row.id, name: row.name, location: row.location, runner_name: row.runner_name, labels: parseJson(row.labels_json, []), agent_version: row.agent_version, hostname: row.hostname, platform: row.platform, arch: row.arch, kernel: row.kernel, uptime_seconds: row.uptime_seconds, metrics, storage, scheduling: nodeScheduling(row), scheduling_policy: nodePolicy(row.id), log_file: row.log_file, sent_at: row.sent_at, last_seen: row.last_seen, online: nodeOnline(row.last_seen), runner_busy: row.runner_busy === null ? null : Boolean(row.runner_busy), auto_cleanup: Boolean(row.auto_cleanup), include_volumes: Boolean(row.include_volumes), last_cleanup_at: row.last_cleanup_at, last_cleanup_reclaimed_bytes: Number(row.last_cleanup_reclaimed_bytes || 0) };
 }
 function normalizeNodePayload(body) {
   const metrics = body.metrics && typeof body.metrics === 'object' ? body.metrics : {};
   const storage = body.storage && typeof body.storage === 'object' ? body.storage : {};
+  const fleet = Array.isArray(body.fleet_runners) ? body.fleet_runners.slice(0, 100).filter(r => r && typeof r === 'object').map(r => ({
+    container: safeString(r.container, 200), image: safeString(r.image, 200),
+    status: safeString(r.status, 100), scope: safeString(r.scope, 30),
+    target: safeString(r.target, 200), running: r.running === true
+  })).filter(r => r.container.startsWith('neko-runner-')) : null;
   return {
+    fleet_runners: fleet,
     id: sanitizeNodeId(body.id), name: safeString(body.name || body.id, 120), location: safeString(body.location, 160), runner_name: safeString(body.runner_name, 120), labels: Array.isArray(body.labels) ? body.labels.slice(0, 30).map(v => safeString(v, 50)) : [], agent_version: safeString(body.agent_version, 40), hostname: safeString(body.hostname, 160), platform: safeString(body.platform, 100), arch: safeString(body.arch, 40), kernel: safeString(body.kernel, 160), uptime_seconds: safeNumber(body.uptime_seconds, 0, 10 * 365 * 86400), metrics: { load_1: safeNumber(metrics.load_1, 0, 100000), load_5: safeNumber(metrics.load_5, 0, 100000), load_15: safeNumber(metrics.load_15, 0, 100000), memory_total: safeNumber(metrics.memory_total), memory_free: safeNumber(metrics.memory_free), memory_used_percent: safeNumber(metrics.memory_used_percent, 0, 100), cpu_count: safeNumber(metrics.cpu_count, 0, 4096) }, storage: { docker_total_bytes: safeNumber(storage.docker_total_bytes), docker_reclaimable_bytes: safeNumber(storage.docker_reclaimable_bytes), runner_logs_bytes: safeNumber(storage.runner_logs_bytes), reclaimable_bytes: safeNumber(storage.reclaimable_bytes) }, log_file: safeString(body.log_file, 200), log_tail: stripAnsi(body.log_tail).slice(-NODE_MAX_LOG_BYTES), sent_at: safeString(body.sent_at, 64), runner_busy: typeof body.runner_busy === 'boolean' ? body.runner_busy : null, cleanup_result: body.cleanup_result && typeof body.cleanup_result === 'object' ? body.cleanup_result : null };
 }
 function nodeAuthorized(req) {
@@ -381,6 +389,9 @@ async function receiveHeartbeat(req, res) {
   db.prepare(`INSERT INTO nodes(id,name,location,runner_name,labels_json,agent_version,hostname,platform,arch,kernel,uptime_seconds,metrics_json,storage_json,log_file,sent_at,last_seen,source_ip,runner_busy)
     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     ON CONFLICT(id) DO UPDATE SET name=excluded.name,location=excluded.location,runner_name=excluded.runner_name,labels_json=excluded.labels_json,agent_version=excluded.agent_version,hostname=excluded.hostname,platform=excluded.platform,arch=excluded.arch,kernel=excluded.kernel,uptime_seconds=excluded.uptime_seconds,metrics_json=excluded.metrics_json,storage_json=excluded.storage_json,log_file=excluded.log_file,sent_at=excluded.sent_at,last_seen=excluded.last_seen,source_ip=excluded.source_ip,runner_busy=excluded.runner_busy`).run(body.id, body.name, body.location, body.runner_name, JSON.stringify(body.labels), body.agent_version, body.hostname, body.platform, body.arch, body.kernel, body.uptime_seconds, JSON.stringify(body.metrics), JSON.stringify(body.storage), body.log_file, body.sent_at, now, clientIp(req), body.runner_busy === null ? null : (body.runner_busy ? 1 : 0));
+  if (body.fleet_runners !== null) {
+    db.prepare('UPDATE nodes SET fleet_runners_json=? WHERE id=?').run(JSON.stringify(body.fleet_runners), body.id);
+  }
   archiveLog(body.id, body.log_file, body.log_tail);
   if (previous && previous.runner_busy === 1 && body.runner_busy === false && previous.auto_cleanup === 1) queueCleanup(body.id, 'job-finished', Boolean(previous.include_volumes));
   const action = pendingCleanup(body.id);
