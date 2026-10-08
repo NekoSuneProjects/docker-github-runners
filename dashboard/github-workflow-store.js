@@ -7,6 +7,12 @@ const { DatabaseSync } = require('node:sqlite');
 
 const GITHUB_ORG = String(process.env.GITHUB_ORG || '').trim();
 const GITHUB_TOKEN = process.env.GITHUB_DASHBOARD_TOKEN || process.env.ACCESS_TOKEN || '';
+const APP_MODE = String(process.env.GITHUB_AUTH_MODE || '').toLowerCase() === 'app';
+const APP_ID = String(process.env.GITHUB_APP_ID || '');
+const APP_KEY = process.env.GITHUB_APP_PRIVATE_KEY_BASE64 ? Buffer.from(process.env.GITHUB_APP_PRIVATE_KEY_BASE64,'base64').toString('utf8') : String(process.env.GITHUB_APP_PRIVATE_KEY || '').replace(/\\n/g,'\n');
+const ORG_INCLUDE = String(process.env.GITHUB_ORG_INCLUDE||'').toLowerCase().split(',').map(x=>x.trim()).filter(Boolean);
+const ORG_EXCLUDE = String(process.env.GITHUB_ORG_EXCLUDE||'').toLowerCase().split(',').map(x=>x.trim()).filter(Boolean);
+
 const DB_FILE = process.env.DASHBOARD_DB_FILE || '/data/dashboard.sqlite';
 const CONFIG_REPOS = String(process.env.DASHBOARD_REPOS || '').split(',').map(v => v.trim()).filter(Boolean).map(v => v.includes('/') ? v.split('/').pop() : v);
 const MAX_REPOS = Math.max(1, Math.min(Number(process.env.DASHBOARD_MAX_REPOS || 100), 500));
@@ -61,18 +67,48 @@ db.exec(`
 let syncing = null;
 let lastHash = '';
 
-function headers() {
-  const h = { Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': API_VERSION, 'User-Agent': 'neko-runner-dashboard-workflow-store/1.0' };
-  if (GITHUB_TOKEN) h.Authorization = `Bearer ${GITHUB_TOKEN}`;
-  return h;
+let jwtCache={token:'',until:0};
+let installationsCache={rows:[],until:0};
+const tokenCache=new Map();
+function appJwt(){
+ if(jwtCache.until>Date.now()+60000)return jwtCache.token;
+ if(!APP_ID||!APP_KEY)throw Error('GitHub App ID/private key missing for workflow history');
+ const now=Math.floor(Date.now()/1000),head=Buffer.from(JSON.stringify({alg:'RS256',typ:'JWT'})).toString('base64url'),payload=Buffer.from(JSON.stringify({iat:now-60,exp:now+540,iss:APP_ID})).toString('base64url'),input=head+'.'+payload;
+ const token=input+'.'+crypto.sign('RSA-SHA256',Buffer.from(input),APP_KEY).toString('base64url');jwtCache={token,until:(now+540)*1000};return token;
 }
-async function gh(apiPath) {
-  const r = await fetch(`https://api.github.com${apiPath}`, { headers: headers(), redirect: 'follow' });
-  if (!r.ok) {
-    const body = await r.text().catch(() => '');
-    throw new Error(`GitHub workflow sync ${r.status}: ${body.slice(0,300) || r.statusText}`);
-  }
-  return r.json();
+async function githubRequest(apiPath,token){
+ const r=await fetch('https://api.github.com'+apiPath,{headers:{Accept:'application/vnd.github+json','X-GitHub-Api-Version':API_VERSION,'User-Agent':'neko-runner-dashboard-workflow-store/2.0',Authorization:'Bearer '+token},redirect:'follow'});
+ if(!r.ok){const body=await r.text().catch(()=> '');throw Error('GitHub workflow sync '+r.status+': '+body.slice(0,250))}
+ return r.json();
+}
+async function appInstallations(){
+ if(installationsCache.until>Date.now())return installationsCache.rows;
+ const rows=[];for(let page=1;page<=20;page++){const data=await githubRequest('/app/installations?per_page=100&page='+page,appJwt());if(!Array.isArray(data))throw Error('GitHub App installations response invalid');rows.push(...data);if(data.length<100)break}
+ installationsCache={rows,until:Date.now()+300000};return rows;
+}
+async function installationToken(installation){
+ const id=Number(installation.id),cached=tokenCache.get(id);
+ if(cached&&cached.until>Date.now()+60000)return cached.token;
+ const r=await fetch('https://api.github.com/app/installations/'+id+'/access_tokens',{method:'POST',headers:{Accept:'application/vnd.github+json','X-GitHub-Api-Version':API_VERSION,'User-Agent':'neko-runner-dashboard-workflow-store/2.0',Authorization:'Bearer '+appJwt()}});
+ if(!r.ok)throw Error('GitHub installation token '+r.status+': '+(await r.text()).slice(0,200));
+ const data=await r.json();if(!data.token)throw Error('GitHub installation token missing');
+ const until=Date.parse(data.expires_at)||Date.now()+3000000;tokenCache.set(id,{token:data.token,until});return data.token;
+}
+async function installForRepo(fullRepo){
+ const owner=fullRepo.split('/')[0].toLowerCase();
+ const installations=await appInstallations();
+ const match=installations.find(i=>String(i.account?.login||'').toLowerCase()===owner);
+ if(!match)throw Error('No GitHub App installation for '+owner);
+ return installationToken(match);
+}
+async function gh(apiPath){
+ let token=GITHUB_TOKEN;
+ if(APP_MODE){
+  if(apiPath.startsWith('/repos/')){const m=apiPath.match(/^\/repos\/([^/]+)\/([^/]+)/);if(!m)throw Error('Invalid repository API path');token=await installForRepo(decodeURIComponent(m[1])+'/'+decodeURIComponent(m[2]));}
+  else token=appJwt();
+ }
+ if(!token)throw Error('GitHub workflow history needs valid GitHub credentials');
+ return githubRequest(apiPath,token);
 }
 function normalizeRun(run, repo) {
   return {
@@ -104,12 +140,31 @@ function normalizeJob(job, repo, runId) {
     steps: (job.steps || []).map(s => ({ number: s.number, name: s.name, status: s.status, conclusion: s.conclusion, started_at: s.started_at || null, completed_at: s.completed_at || null })),
   };
 }
-async function reposToSync() {
-  if (CONFIG_REPOS.length) return CONFIG_REPOS.slice(0, MAX_REPOS);
-  const stored = db.prepare('SELECT name FROM github_live_repos ORDER BY last_seen_at DESC LIMIT ?').all(MAX_REPOS).map(r => r.name);
-  if (stored.length) return stored;
-  const data = await gh(`/orgs/${encodeURIComponent(GITHUB_ORG)}/repos?per_page=100&type=all&sort=pushed&direction=desc`);
-  return data.slice(0, MAX_REPOS).map(r => r.name);
+// APP_WORKFLOW_DISCOVERY_V2: discover repositories across all App installations.
+async function reposToSync(){
+ if(APP_MODE){
+  const installations=await appInstallations(),repos=[];
+  for(const inst of installations){
+   const login=String(inst.account?.login||'');
+   if(inst.account?.type==='Organization' && ((ORG_INCLUDE.length&&!ORG_INCLUDE.includes(login.toLowerCase()))||ORG_EXCLUDE.includes(login.toLowerCase())))continue;
+   try {
+    const token=await installationToken(inst);
+    for(let page=1;page<=20;page++){
+     const response=await githubRequest('/installation/repositories?per_page=100&page='+page,token);
+     const batch=response.repositories||[];repos.push(...batch.filter(r=>!r.archived).map(r=>r.full_name));
+     if(batch.length<100)break;
+    }
+   }catch(err){console.warn('[workflow-store] discovery '+login+': '+err.message)}
+  }
+  const fromFleet=db.prepare('SELECT fleet_runners_json FROM nodes').all().flatMap(row=>{try{return JSON.parse(row.fleet_runners_json||'[]')}catch{return[]}}).map(r=>String(r.target||'').replace(/^repo:/,'')).filter(r=>r.includes('/'));
+  const stored=db.prepare('SELECT name FROM github_live_repos ORDER BY last_seen_at DESC LIMIT ?').all(MAX_REPOS).map(r=>r.name);
+  return [...new Set([...fromFleet,...repos,...stored].map(r=>r.includes('/')?r:GITHUB_ORG+'/'+r))].slice(0,MAX_REPOS);
+ }
+ if(CONFIG_REPOS.length)return CONFIG_REPOS.slice(0,MAX_REPOS).map(r=>r.includes('/')?r:GITHUB_ORG+'/'+r);
+ const stored=db.prepare('SELECT name FROM github_live_repos ORDER BY last_seen_at DESC LIMIT ?').all(MAX_REPOS).map(r=>r.name);
+ if(stored.length)return stored.map(r=>r.includes('/')?r:GITHUB_ORG+'/'+r);
+ const data=await gh('/orgs/'+encodeURIComponent(GITHUB_ORG)+'/repos?per_page=100&type=all&sort=pushed');
+ return data.slice(0,MAX_REPOS).map(r=>r.full_name);
 }
 function upsertRepos(repos, now) {
   const stmt = db.prepare('INSERT INTO github_live_repos(name,last_seen_at) VALUES(?,?) ON CONFLICT(name) DO UPDATE SET last_seen_at=excluded.last_seen_at');
@@ -144,7 +199,9 @@ function emitIfChanged(reason) {
   return snap;
 }
 async function syncRepo(repo) {
-  const data = await gh(`/repos/${encodeURIComponent(GITHUB_ORG)}/${encodeURIComponent(repo)}/actions/runs?per_page=${RUNS_PER_REPO}`);
+  const fullRepo = repo.includes('/') ? repo : `${GITHUB_ORG}/${repo}`;
+  const [owner,name] = fullRepo.split('/');
+  const data = await gh(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/actions/runs?per_page=${RUNS_PER_REPO}`);
   const runs = (data.workflow_runs || []).map(r => normalizeRun(r, repo));
   for (const run of runs) upsertRun(run);
 
@@ -158,7 +215,7 @@ async function syncRepo(repo) {
     // in_progress/queued, fetch it one final time to close the timeline cleanly.
     if (!active && haveJobs && !unfinished) continue;
     try {
-      const jobs = await gh(`/repos/${encodeURIComponent(GITHUB_ORG)}/${encodeURIComponent(repo)}/actions/runs/${run.id}/jobs?per_page=100`);
+      const jobs = await gh(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/actions/runs/${run.id}/jobs?per_page=100`);
       for (const job of jobs.jobs || []) upsertJob(normalizeJob(job, repo, run.id));
     } catch (err) {
       console.warn(`[workflow-store] jobs ${repo}#${run.id}: ${err.message}`);
@@ -166,13 +223,13 @@ async function syncRepo(repo) {
   }
 }
 async function sync(reason='periodic', onlyRepo='') {
-  if (!GITHUB_ORG || !GITHUB_TOKEN) return snapshot();
+  if (!APP_MODE && (!GITHUB_ORG || !GITHUB_TOKEN)) return snapshot();
   if (syncing) return syncing;
   syncing = (async () => {
     const attempt = new Date().toISOString();
     db.prepare('UPDATE github_workflow_sync_state SET last_attempt_at=?,last_error=? WHERE singleton=1').run(attempt, '');
     try {
-      const repos = onlyRepo ? [onlyRepo] : await reposToSync();
+      const repos = onlyRepo ? [onlyRepo.includes('/')?onlyRepo:GITHUB_ORG+'/'+onlyRepo] : await reposToSync();
       upsertRepos(repos, attempt);
       for (const repo of repos) {
         try { await syncRepo(repo); }
@@ -197,7 +254,7 @@ const timer = setInterval(() => sync('periodic').catch(() => {}), SYNC_SECONDS *
 timer.unref();
 
 process.on('neko:github-webhook', payload => {
-  const repo = payload?.repository?.name;
+  const repo = payload?.repository?.full_name || payload?.repository?.name;
   if (repo) sync('webhook', repo).catch(() => {});
 });
 process.on('neko:runner-sync', () => {
