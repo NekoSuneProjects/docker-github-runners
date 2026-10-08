@@ -4,6 +4,7 @@
     overview: ['Overview', 'Live runner health and current builds'],
     nodes: ['Build Nodes', 'Connected machines, runners and diagnostics'],
     workflows: ['Workflows', 'Cached workflow state pushed over WebSocket'],
+    webhooks: ['Webhooks', 'Verified GitHub deliveries, structured details and raw JSON'],
     storage: ['Storage & Cleanup', 'Reclaimable Docker data and automatic cleanup'],
   };
 
