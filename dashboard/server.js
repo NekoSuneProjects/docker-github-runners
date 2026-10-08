@@ -569,7 +569,18 @@ function normalizeNodePayload(body) {
   return { id, name: safeShortString(body.name || id, 120), location: safeShortString(body.location || '', 160), runner_name: safeShortString(body.runner_name || '', 120), labels: Array.isArray(body.labels) ? body.labels.slice(0, 30).map(v => safeShortString(v, 50)) : [], agent_version: safeShortString(body.agent_version || 'unknown', 40), hostname: safeShortString(body.hostname || '', 160), platform: safeShortString(body.platform || '', 80), arch: safeShortString(body.arch || '', 40), kernel: safeShortString(body.kernel || '', 160), uptime_seconds: safeNumber(body.uptime_seconds, 0, 10 * 365 * 24 * 3600), metrics: { load_1: safeNumber(metrics.load_1, 0, 100000), load_5: safeNumber(metrics.load_5, 0, 100000), load_15: safeNumber(metrics.load_15, 0, 100000), memory_total: safeNumber(metrics.memory_total, 0), memory_free: safeNumber(metrics.memory_free, 0), memory_used_percent: safeNumber(metrics.memory_used_percent, 0, 100), cpu_count: safeNumber(metrics.cpu_count, 0, 4096) }, scheduling: { mode: body.scheduling?.mode === 'capped-auto' ? 'capped-auto' : 'auto', capacity: safeNumber(body.scheduling?.capacity, 1, 256), cpu_per_slot: safeNumber(body.scheduling?.cpu_per_slot, 1, 256), ram_gb_per_slot: safeNumber(body.scheduling?.ram_gb_per_slot, 1, 1024), max_slots: safeNumber(body.scheduling?.max_slots, 0, 256) }, log_file: safeShortString(body.log_file || '', 200), log_tail: logTail, sent_at: safeShortString(body.sent_at || '', 64), last_seen: new Date().toISOString(), source_ip: '' };
 }
 function nodeIsOnline(node) { return Date.now() - new Date(node.last_seen).getTime() <= NODE_OFFLINE_SECONDS * 1000; }
-function publicNode(node) { return { id: node.id, name: node.name, location: node.location, runner_name: node.runner_name, labels: node.labels, agent_version: node.agent_version, hostname: node.hostname, platform: node.platform, arch: node.arch, kernel: node.kernel, uptime_seconds: node.uptime_seconds, metrics: node.metrics, scheduling: node.scheduling || null, scheduling_policy: node.scheduling_policy || null, log_file: node.log_file, sent_at: node.sent_at, last_seen: node.last_seen, online: nodeIsOnline(node) }; }
+function effectiveNodeScheduling(node) {
+  const original = node.scheduling || {};
+  const policy = node.scheduling_policy || null;
+  if (!policy) return original;
+  const cpu = Number(node.metrics?.cpu_count || 1);
+  const ram = Number(node.metrics?.memory_total || 0) / (1024 ** 3);
+  const cpuSlots = Math.max(1, Math.floor(Math.max(1, cpu - 1) / policy.cpu_per_slot));
+  const ramSlots = Math.max(1, Math.floor(Math.max(1, ram - 2) / policy.ram_gb_per_slot));
+  const capacity = Math.max(1, Math.min(policy.max_slots || Infinity, cpuSlots, ramSlots));
+  return { mode: policy.max_slots ? 'capped-auto' : 'auto', capacity, cpu_per_slot: policy.cpu_per_slot, ram_gb_per_slot: policy.ram_gb_per_slot, max_slots: policy.max_slots };
+}
+function publicNode(node) { return { id: node.id, name: node.name, location: node.location, runner_name: node.runner_name, labels: node.labels, agent_version: node.agent_version, hostname: node.hostname, platform: node.platform, arch: node.arch, kernel: node.kernel, uptime_seconds: node.uptime_seconds, metrics: node.metrics, scheduling: effectiveNodeScheduling(node), scheduling_policy: node.scheduling_policy || null, log_file: node.log_file, sent_at: node.sent_at, last_seen: node.last_seen, online: nodeIsOnline(node) }; }
 
 async function loadNodes() {
   try {
