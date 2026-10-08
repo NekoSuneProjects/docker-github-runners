@@ -31,7 +31,7 @@ function renderRunners(){
  const items=fleet.length?fleet.map(r=>({...r,_source:'node'})):github.map(r=>({...r,_source:'github'}));
  if(!items.length){c.innerHTML='<div class="empty">No runner containers reported by connected nodes.</div>';return}
  keyed(c,items,r=>r._source==='github'?'github:'+r.name:'node:'+r.container,()=>{const e=document.createElement('article');e.className='runner';return e},(e,r)=>{
-  const html=r._source==='github'?runnerInner(r):`<div class="runner-top"><div class="runner-name">${esc(r.target||r.container)}</div><span class="badge ${r.job_state==='busy'?'busy':'online'}">${r.job_state==='busy'?'Busy':r.job_state==='idle'?'Idle':'Running'}</span></div><div class="runner-labels">${esc(r.node_name)} • ${esc(r.scope||'runner')} • ${esc(r.container)}</div><div class="node-sub">${r.job_state==='busy'?'Current job: '+esc(r.job_name||'Unknown'):r.job_state==='idle'?'Listener idle':'Container running; job state unknown'} • node-reported</div>`;
+  const html=r._source==='github'?runnerInner(r):`<div class="runner-top"><div class="runner-name">${esc(r.target||r.container)}</div><span class="badge ${r.job_state==='busy'?'busy':'online'}">${r.job_state==='busy'?'Busy':r.job_state==='idle'?'Idle':'Running'}</span></div><div class="runner-labels">${esc(r.node_name)} • ${esc(r.scope||'runner')} • ${esc(r.container)}</div><div class="node-sub">${r.job_state==='busy'?'Current job: '+esc(r.job_name||'Unknown')+(r.job_repo?' • '+esc(r.job_repo):''):r.job_state==='idle'?'Listener idle':'Container running; job state unknown'} • node-reported</div>`;
   liveBase(e,html);
  },child=>child.querySelector('.runner-name')?.textContent?.trim());
 }
