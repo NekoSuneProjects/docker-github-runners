@@ -217,8 +217,21 @@ async function localRunnerJobStatus(container) {
       if (started) { state='busy'; job=started[1].trim().slice(0,160); }
       if (/Job .+ completed with result:|Job completed with result:|Listening for Jobs/i.test(line)) {state='idle';job='';}
     }
-    return {job_state:state,job_name:job};
-  } catch {return {job_state:'unknown',job_name:''};}
+    // Repository/run URLs are only reported when present in local runner output.
+    // An organization target is not itself a repository.
+    let repo='', run_url='', run_id='';
+    if(state==='busy'){
+      const recent=lines.slice(-90).join('\n');
+      const links=[...recent.matchAll(/https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/actions\/runs\/(\d+)/g)];
+      if(links.length){
+        const match=links[links.length-1];
+        repo=match[1].slice(0,180);
+        run_id=match[2];
+        run_url='https://github.com/'+repo+'/actions/runs/'+run_id;
+      }
+    }
+    return {job_state:state,job_name:job,job_repo:repo,job_run_id:run_id,job_run_url:run_url};
+  } catch {return {job_state:'unknown',job_name:'',job_repo:'',job_run_id:'',job_run_url:''};}
 }
 async function managedRunnerInventory() {
   try {
