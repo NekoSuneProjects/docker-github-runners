@@ -16,6 +16,7 @@
       <button class="nav-btn active" data-nav="overview"><span class="nav-icon">⌂</span>Overview</button>
       <button class="nav-btn" data-nav="nodes"><span class="nav-icon">◈</span>Build Nodes</button>
       <button class="nav-btn" data-nav="workflows"><span class="nav-icon">▷</span>Workflows</button>
+      <button class="nav-btn" data-nav="webhooks"><span class="nav-icon">⇄</span>Webhooks</button>
       <button class="nav-btn" data-nav="storage"><span class="nav-icon">▱</span>Storage & Cleanup</button>
     </nav>
     <div class="nav-label">Resources</div>
@@ -56,6 +57,13 @@
         <section class="section"><div class="section-head"><div><h2>Workflow activity</h2><p>WebSocket-pushed SQLite state with self-hosted vs GitHub-hosted runner detection</p></div><input id="workflowFilter" class="filter" placeholder="Filter repo, workflow, branch, runner…"></div><div class="table-wrap"><table><thead><tr><th>Repository</th><th>Workflow</th><th>Branch</th><th>Status</th><th>Runner</th><th>Actor</th><th>Started</th><th>Last Updated</th></tr></thead><tbody id="workflowRows"></tbody></table></div></section>
       </section>
 
+      <section class="view" data-view="webhooks">
+        <section class="section">
+          <div class="section-head"><div><h2>GitHub webhook deliveries</h2><p>Verified deliveries to /api/github/webhook · SQLite history · payload values are redacted for secrets</p></div><input id="webhookFilter" class="filter" placeholder="Search event, repo, actor, action…"></div>
+          <div class="table-wrap"><table><thead><tr><th>Received</th><th>Event</th><th>Action</th><th>Repository</th><th>Sender</th><th>Status</th><th>JSON</th></tr></thead><tbody id="webhookRows"><tr><td colspan="7" class="empty">Waiting for signed GitHub webhook deliveries…</td></tr></tbody></table></div>
+          <div class="section-body"><div class="node-sub">Shows the latest 100 deliveries; the latest 500 are retained in SQLite. Click a row to inspect its dynamically extracted fields and raw JSON.</div></div>
+        </section>
+      </section>
       <section class="view" data-view="storage">
         <section class="section"><div class="section-head"><div><h2>Storage & automatic cleanup</h2><p>Safe cleanup removes Buildx cache, stopped containers, unused images and networks. Volumes remain opt-in.</p></div></div><div class="section-body"><div class="storage-grid" id="storageCards"></div></div></section>
       </section>
@@ -70,6 +78,7 @@
 </aside>
 
 <script src="/dashboard-shell.js" defer></script>
+<script src="/webhook-history.js" defer></script>
 <script src="/websocket-live-v2.js" defer></script>
 </body>
 </html>
