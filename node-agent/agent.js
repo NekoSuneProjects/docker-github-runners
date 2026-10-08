@@ -206,12 +206,35 @@ async function maybeRecoverStuck(watchdog) {
   }
 }
 
+async function managedRunnerInventory() {
+  try {
+    // Only containers owned by this node; no host-wide Docker disclosure.
+    const output = await exec('docker', ['ps', '--filter', 'label=neko.runner.managed=true', '--filter', 'label=neko.runner.node=' + NODE_ID, '--format', '{{json .}}'], 15000);
+    return output.split('\n').filter(Boolean).slice(0, 100).map(line => {
+      const item = JSON.parse(line);
+      const name = String(item.Names || '').slice(0, 200);
+      const labels = Object.fromEntries(String(item.Labels || '').split(',').map(p => { const i=p.indexOf('='); return i<0?[]:[p.slice(0,i),p.slice(i+1)]; }).filter(p => p.length === 2));
+      return {
+        container: name, image: String(item.Image || '').slice(0, 200),
+        status: String(item.Status || '').slice(0, 100),
+        scope: String(labels['neko.runner.scope'] || (name.includes('-org-')?'org':name.includes('-repo-')?'repo':'unknown')).slice(0,30),
+        target: String(labels['neko.runner.target'] || labels['neko.runner.name'] || name.replace(/^neko-runner-[^-]+-/, '')).slice(0,200),
+        running: true
+      };
+    });
+  } catch (err) {
+    console.warn('[heartbeat] runner container inventory unavailable: ' + err.message);
+    return null; // Do not erase last known inventory during transient Docker errors.
+  }
+}
+
 async function payload() {
   const [l1,l5,l15] = loadavg();
   const mem = memory();
   const docker = await dockerStorage();
   const diag = await diagStats();
   const busy = await runnerBusy();
+  const fleetRunners = await managedRunnerInventory();
   const watchdog = watchdogState(busy, diag);
   const memPct = mem.total ? ((mem.total - mem.free) / mem.total) * 100 : 0;
 
@@ -228,6 +251,7 @@ async function payload() {
     kernel:kernel(),
     uptime_seconds:uptime(),
     runner_busy:busy,
+    fleet_runners:fleetRunners,
     scheduling: {
       mode: Number(process.env.NODE_MAX_CONCURRENT_JOBS || 0) > 0 ? 'capped-auto' : 'auto',
       cpu_per_slot: Math.max(1, Number(process.env.NODE_SLOT_CPU_CORES || 2)),
