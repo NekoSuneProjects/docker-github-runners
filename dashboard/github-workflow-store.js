@@ -133,7 +133,7 @@ function runnerType(job) {
   const group = String(job.runner_group_name || '');
   if (!name) return 'waiting';
   const known = db.prepare('SELECT github_id FROM github_runners WHERE name=?').get(name);
-  if (known || /^neko-runner[-_]/i.test(name) || /self[- ]hosted/i.test(group)) return 'self_hosted';
+  if (known || /^neko-runner[-_]/i.test(name) || /^de-vps-\d+-(?:org|repo)-/i.test(name) || /self[- ]hosted/i.test(group) || (Array.isArray(job.labels)&&job.labels.includes('self-hosted'))) return 'self_hosted';
   if (/github actions/i.test(group) || /^github actions\b/i.test(name) || /^hosted agent\b/i.test(name) || /^github[- ]hosted$/i.test(name)) return 'github_hosted';
   return 'external';
 }
@@ -204,7 +204,7 @@ function upsertJob(job) {
     .run(job.repo, job.run_id, job.id, job.status, job.conclusion, job.runner_name, job.runner_group_name, job.runner_type, new Date().toISOString(), JSON.stringify(job));
 }
 function snapshot() {
-  const runs = db.prepare(`SELECT json FROM github_live_runs ORDER BY datetime(json_extract(json, '$.created_at')) DESC, run_id DESC LIMIT 500`).all().map(r => JSON.parse(r.json));
+  const runs = db.prepare(`SELECT json FROM github_live_runs ORDER BY COALESCE(json_extract(json, '$.created_at'), updated_at) DESC, run_id DESC LIMIT 500`).all().map(r => JSON.parse(r.json));
   const jobs = db.prepare('SELECT json FROM github_live_jobs ORDER BY datetime(updated_at) DESC LIMIT 2000').all().map(r => JSON.parse(r.json));
   const terminal=new Set(runs.filter(r=>r.status==='completed').map(r=>String(r.repo)+'|'+r.id));
   const activeJobs = jobs.filter(j => ['queued','in_progress','waiting','pending'].includes(String(j.status))&&!terminal.has(String(j.repo)+'|'+j.run_id));
