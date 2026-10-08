@@ -26,9 +26,11 @@ services:
 
       NODE_RUNNER_WORK_VOLUME: ${NODE_ID:-neko-node}-runner-work
       NODE_RUNNER_DIAG_VOLUME: ${NODE_ID:-neko-node}-runner-diag
-      NODE_RUNNER_LOCK_VOLUME: ${NODE_ID:-neko-node}-runner-lock
-      NODE_SHARED_LOCK_STALE_SECONDS: ${NODE_SHARED_LOCK_STALE_SECONDS:-259200}
       NODE_FLEET_RECONCILE_SECONDS: ${NODE_FLEET_RECONCILE_SECONDS:-120}
+      NODE_MAX_CONCURRENT_JOBS: ${NODE_MAX_CONCURRENT_JOBS:-0}
+      NODE_SLOT_CPU_CORES: ${NODE_SLOT_CPU_CORES:-2}
+      NODE_SLOT_RAM_GB: ${NODE_SLOT_RAM_GB:-4}
+      NODE_SLOT_ROTATE_SECONDS: ${NODE_SLOT_ROTATE_SECONDS:-600}
 
       NODE_CAPACITY_CLASS: ${NODE_CAPACITY_CLASS:-auto}
       NODE_GPU: ${NODE_GPU:-auto}
@@ -58,7 +60,6 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - runner-diag:/runner-diag
       - runner-work:/runner-work:ro
-      - runner-lock:/runner-lock
       - /etc/hostname:/host/etc/hostname:ro
       - /etc/os-release:/host/etc/os-release:ro
       - /proc:/host/proc:ro
@@ -71,5 +72,3 @@ volumes:
     name: "${NODE_ID:-neko-node}-runner-work"
   runner-diag:
     name: "${NODE_ID:-neko-node}-runner-diag"
-  runner-lock:
-    name: "${NODE_ID:-neko-node}-runner-lock"
