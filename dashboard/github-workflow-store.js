@@ -278,8 +278,35 @@ process.on('neko:github-webhook', payload => {
   // workflow run ID and job timeline. Do not waste API requests to retrieve it.
   if (payload.workflow_job?.id && payload.workflow_job?.run_id) {
     try {
-      const job = normalizeJob(payload.workflow_job, repo, payload.workflow_job.run_id);
+      const eventJob=payload.workflow_job;
+      const job = normalizeJob(eventJob, repo, eventJob.run_id);
       upsertJob(job);
+      // workflow_job can arrive without a workflow_run delivery. Store a
+      // provisional run so Workflows and active runner matching still work.
+      const exists=db.prepare('SELECT 1 FROM github_live_runs WHERE repo=? AND run_id=?').get(repo,job.run_id);
+      if(!exists){
+        upsertRun({
+          id:job.run_id,repo,
+          name:payload.workflow?.name||payload.workflow_name||'GitHub Actions',
+          display_title:payload.workflow?.name||payload.workflow_name||job.name,
+          run_number:Number(payload.run_number||0),
+          status:job.status==='completed'?'completed':job.status==='in_progress'?'in_progress':'queued',
+          conclusion:job.conclusion||null,
+          branch:payload.workflow_job?.head_branch||payload.repository?.default_branch||'',
+          actor:payload.sender?.login||'unknown',
+          created_at:payload.workflow_job?.created_at||new Date().toISOString(),
+          updated_at:new Date().toISOString(),
+          html_url:'https://github.com/'+repo+'/actions/runs/'+job.run_id
+        });
+      }else{
+        const current=db.prepare('SELECT json FROM github_live_runs WHERE repo=? AND run_id=?').get(repo,job.run_id);
+        if(current){
+          const run=JSON.parse(current.json);
+          if(job.status==='in_progress'&&run.status==='queued')run.status='in_progress';
+          if(job.status==='completed'&&run.status!=='completed')run.updated_at=new Date().toISOString();
+          upsertRun(run);
+        }
+      }
       emitIfChanged('workflow-job-webhook');
     } catch (err) { console.warn('[workflow-store] workflow_job webhook: '+err.message); }
     return;
