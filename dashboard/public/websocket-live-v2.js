@@ -128,6 +128,7 @@ function renderWorkflows(){
   const reason=live.overview?.workflow_sync?.last_error||'No workflows synchronized and no busy node runners currently reported.';
   c.innerHTML='<tr><td colspan="8" class="empty">'+esc(reason)+'</td></tr>';return;
  }
+ c.querySelectorAll('tr.empty-row, tr:not([data-live-key]):not([data-workflow])').forEach(el=>el.remove());
  const rows=[
   ...remote.map(r=>({key:'remote:'+r.repo+'|'+r.id,type:'remote',value:r})),
   ...local.map(r=>({key:'local:'+r.container,type:'local',value:r}))
@@ -139,7 +140,8 @@ function renderWorkflows(){
   }
   const r=x.value;el.dataset.workflow='';el.onclick=()=>openRunner('node:'+r.container);
   const started=r.job_started_at||'';const updated=r.console_last_output_at||'';
-  const html='<td><b>'+esc(r.job_repo||'Not reported by node')+'</b><div class="node-sub">Local agent</div></td>'+
+  const localRepo=r.job_repo||(r.scope==='repository'&&String(r.target||'').startsWith('repo:')?r.target.slice(5):'');
+  const html='<td><b>'+esc(localRepo||'Not reported by node')+'</b><div class="node-sub">Local agent</div></td>'+
    '<td>'+esc(r.job_workflow||r.job_name||'Active self-hosted job')+'</td>'+
    '<td>'+esc(r.job_branch||'Unknown')+'</td>'+
    '<td><span class="badge busy">IN PROGRESS</span></td>'+
