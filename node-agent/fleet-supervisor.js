@@ -567,7 +567,8 @@ function stop(signal) {
   console.log(`[fleet] ${signal}: stopping`);
   if (timer) clearTimeout(timer);
   if (child) child.kill('SIGTERM');
-  stopFleet().finally(() => setTimeout(() => process.exit(0), 100).unref());
+  // Do not terminate managed runners on supervisor restart: active GitHub jobs survive agent deployments.
+  setTimeout(() => process.exit(0), 100).unref();
 }
 
 if (!/^https?:\/\//i.test(DASHBOARD_URL)) {
