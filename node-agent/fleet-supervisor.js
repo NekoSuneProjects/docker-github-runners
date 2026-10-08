@@ -383,6 +383,15 @@ function containerName(target) {
   const suffix = target.scope === 'organization' ? `org-${safe(target.org)}` : `repo-${safe(target.repo.replace('/', '-'))}`;
   return `neko-runner-${NODE_ID}-${suffix}`.toLowerCase().slice(0, 120);
 }
+async function runnerImageOutdated(id) {
+  try {
+    const current = (await exec('docker', ['inspect', '-f', '{{.Image}}', id], 15000)).trim();
+    const desired = (await exec('docker', ['image', 'inspect', '-f', '{{.Id}}', RUNNER_IMAGE], 15000)).trim();
+    return Boolean(current && desired && current !== desired);
+  } catch {
+    return false;
+  }
+}
 async function existingRunnerFingerprint(id) {
   if (!id) return '';
   try { return (await exec('docker', ['inspect', '-f', '{{ index .Config.Labels "neko.runner.capability-fingerprint" }}', id], 15000)).trim(); }
@@ -406,8 +415,8 @@ async function ensureRunner(target, capabilities) {
   const name = runnerName(target);
   if (id) {
     const fingerprint = await existingRunnerFingerprint(id);
-    if (fingerprint !== capabilities.fingerprint) {
-      console.log(`[fleet] recreating ${targetKey(target)}: capacity labels changed`);
+    if (fingerprint !== capabilities.fingerprint || await runnerImageOutdated(id)) {
+      console.log(`[fleet] recreating ${targetKey(target)}: capacity labels or runner image changed`);
       if (await remoteRunnerBusy(target, name)) {
         console.log(`[fleet] deferring image/label change for busy runner ${name}`);
         return;
