@@ -15,6 +15,7 @@ const LABELS = String(process.env.LABELS || process.env.NODE_LABELS || 'docker,b
 const WORK_VOLUME = String(process.env.NODE_RUNNER_WORK_VOLUME || `${NODE_ID}-runner-work`);
 const DIAG_VOLUME = String(process.env.NODE_RUNNER_DIAG_VOLUME || `${NODE_ID}-runner-diag`);
 const SLOT_OVERRIDE = Math.max(0, Number(process.env.NODE_MAX_CONCURRENT_JOBS || 0));
+let remoteSlotPolicy = null;
 const SLOT_RAM_GB = Math.max(1, Number(process.env.NODE_SLOT_RAM_GB || 4));
 const SLOT_CPU_CORES = Math.max(1, Number(process.env.NODE_SLOT_CPU_CORES || 2));
 const ROTATE_MS = Math.max(60000, Number(process.env.NODE_SLOT_ROTATE_SECONDS || 600) * 1000);
@@ -292,11 +293,24 @@ async function remoteRunnerBusy(target, name) {
   const runner = runners.find(r => r.name === name);
   return runner ? Boolean(runner.busy) : false;
 }
+async function refreshSlotPolicy() {
+  try {
+    const r = await fetch(`${DASHBOARD_URL}/internal/nodes/scheduling?id=${encodeURIComponent(NODE_ID)}`, {
+      headers: { Authorization: `Bearer ${NODE_TOKEN}`, Accept: 'application/json' },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!r.ok) throw Error(`dashboard scheduling policy HTTP ${r.status}`);
+    const data = await r.json();
+    remoteSlotPolicy = data.policy || null;
+  } catch (err) {
+    console.warn(`[fleet] keeping previous capacity policy: ${err.message}`);
+  }
+}
 function slotCapacity(caps) {
   // Reserve system resources. Each runner takes one GitHub job at a time.
-  const cpuSlots = Math.max(1, Math.floor(Math.max(1, caps.cpu - 1) / SLOT_CPU_CORES));
-  const ramSlots = Math.max(1, Math.floor(Math.max(1, caps.ram_gb - 2) / SLOT_RAM_GB));
-  return Math.max(1, Math.min(SLOT_OVERRIDE || Infinity, cpuSlots, ramSlots));
+  const cpuSlots = Math.max(1, Math.floor(Math.max(1, caps.cpu - 1) / (remoteSlotPolicy?.cpu_per_slot || SLOT_CPU_CORES)));
+  const ramSlots = Math.max(1, Math.floor(Math.max(1, caps.ram_gb - 2) / (remoteSlotPolicy?.ram_gb_per_slot || SLOT_RAM_GB)));
+  return Math.max(1, Math.min((remoteSlotPolicy?.max_slots ?? SLOT_OVERRIDE) || Infinity, cpuSlots, ramSlots));
 }
 async function managedStates(targets) {
   const results = [];
@@ -476,6 +490,7 @@ async function reconcile() {
   if (stopping) return;
   try {
     const capabilities = await detectCapabilities();
+    await refreshSlotPolicy();
     const targets = await discoverTargets();
     if (!targets.length) throw new Error('Agent discovered no GitHub runner targets');
     await Promise.all([ensureVolume(WORK_VOLUME), ensureVolume(DIAG_VOLUME)]);
