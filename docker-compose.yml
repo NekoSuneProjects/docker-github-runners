@@ -19,9 +19,6 @@ services:
       ENABLE_MULTIARCH_ON_START: ${ENABLE_MULTIARCH_ON_START:-true}
       MULTIARCH_PLATFORMS: ${MULTIARCH_PLATFORMS:-arm64,amd64}
 
-      NODE_SHARED_JOB_LOCK: ${NODE_SHARED_JOB_LOCK:-true}
-      NODE_SHARED_LOCK_DIR: ${NODE_SHARED_LOCK_DIR:-/runner-lock}
-      NODE_SHARED_LOCK_STALE_SECONDS: ${NODE_SHARED_LOCK_STALE_SECONDS:-259200}
 
       # Standalone/API mode only. Leave blank in broker mode.
       ACCESS_TOKEN: ${ACCESS_TOKEN:-}
@@ -31,7 +28,6 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - runner-work:/work
       - runner-diag:/actions-runner/_diag
-      - runner-lock:/runner-lock
     init: true
     stop_grace_period: 35s
     restart: unless-stopped
@@ -39,4 +35,3 @@ services:
 volumes:
   runner-work:
   runner-diag:
-  runner-lock:
