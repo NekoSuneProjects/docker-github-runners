@@ -569,7 +569,7 @@ function normalizeNodePayload(body) {
   return { id, name: safeShortString(body.name || id, 120), location: safeShortString(body.location || '', 160), runner_name: safeShortString(body.runner_name || '', 120), labels: Array.isArray(body.labels) ? body.labels.slice(0, 30).map(v => safeShortString(v, 50)) : [], agent_version: safeShortString(body.agent_version || 'unknown', 40), hostname: safeShortString(body.hostname || '', 160), platform: safeShortString(body.platform || '', 80), arch: safeShortString(body.arch || '', 40), kernel: safeShortString(body.kernel || '', 160), uptime_seconds: safeNumber(body.uptime_seconds, 0, 10 * 365 * 24 * 3600), metrics: { load_1: safeNumber(metrics.load_1, 0, 100000), load_5: safeNumber(metrics.load_5, 0, 100000), load_15: safeNumber(metrics.load_15, 0, 100000), memory_total: safeNumber(metrics.memory_total, 0), memory_free: safeNumber(metrics.memory_free, 0), memory_used_percent: safeNumber(metrics.memory_used_percent, 0, 100), cpu_count: safeNumber(metrics.cpu_count, 0, 4096) }, scheduling: { mode: body.scheduling?.mode === 'capped-auto' ? 'capped-auto' : 'auto', capacity: safeNumber(body.scheduling?.capacity, 1, 256), cpu_per_slot: safeNumber(body.scheduling?.cpu_per_slot, 1, 256), ram_gb_per_slot: safeNumber(body.scheduling?.ram_gb_per_slot, 1, 1024), max_slots: safeNumber(body.scheduling?.max_slots, 0, 256) }, log_file: safeShortString(body.log_file || '', 200), log_tail: logTail, sent_at: safeShortString(body.sent_at || '', 64), last_seen: new Date().toISOString(), source_ip: '' };
 }
 function nodeIsOnline(node) { return Date.now() - new Date(node.last_seen).getTime() <= NODE_OFFLINE_SECONDS * 1000; }
-function publicNode(node) { return { id: node.id, name: node.name, location: node.location, runner_name: node.runner_name, labels: node.labels, agent_version: node.agent_version, hostname: node.hostname, platform: node.platform, arch: node.arch, kernel: node.kernel, uptime_seconds: node.uptime_seconds, metrics: node.metrics, scheduling: node.scheduling || null, log_file: node.log_file, sent_at: node.sent_at, last_seen: node.last_seen, online: nodeIsOnline(node) }; }
+function publicNode(node) { return { id: node.id, name: node.name, location: node.location, runner_name: node.runner_name, labels: node.labels, agent_version: node.agent_version, hostname: node.hostname, platform: node.platform, arch: node.arch, kernel: node.kernel, uptime_seconds: node.uptime_seconds, metrics: node.metrics, scheduling: node.scheduling || null, scheduling_policy: node.scheduling_policy || null, log_file: node.log_file, sent_at: node.sent_at, last_seen: node.last_seen, online: nodeIsOnline(node) }; }
 
 async function loadNodes() {
   try {
@@ -594,7 +594,7 @@ async function receiveNodeHeartbeat(req, res) {
   if (!nodeAuthorized(req)) return json(res, 401, { error: 'Invalid node token' });
   const raw = await readBody(req, NODE_MAX_BODY_BYTES); let body;
   try { body = JSON.parse(raw); } catch { return json(res, 400, { error: 'Invalid JSON body' }); }
-  const node = normalizeNodePayload(body); node.source_ip = clientIp(req); nodes.set(node.id, node); scheduleNodePersist(); return json(res, 200, { ok: true, node_id: node.id, received_at: node.last_seen });
+  const node = normalizeNodePayload(body); node.scheduling_policy = nodes.get(node.id)?.scheduling_policy || null; node.source_ip = clientIp(req); nodes.set(node.id, node); scheduleNodePersist(); return json(res, 200, { ok: true, node_id: node.id, received_at: node.last_seen });
 }
 function getNodesSummary() {
   const list = [...nodes.values()].map(publicNode).sort((a, b) => a.online !== b.online ? (a.online ? -1 : 1) : a.name.localeCompare(b.name));
@@ -624,6 +624,11 @@ const server = http.createServer(async (req, res) => {
   try {
     if (url.pathname === '/healthz') return json(res, 200, { ok: true });
     if (url.pathname === '/internal/nodes/heartbeat' && req.method === 'POST') return await receiveNodeHeartbeat(req, res);
+    if (url.pathname === '/internal/nodes/scheduling' && req.method === 'GET') {
+      if (!nodeAuthorized(req)) return json(res, 401, { error: 'Invalid node token' });
+      const id = sanitizeNodeId(url.searchParams.get('id'));
+      return json(res, 200, { policy: nodes.get(id)?.scheduling_policy || null });
+    }
     if (url.pathname === '/internal/runner-broker/targets' && req.method === 'GET') return await brokerTargets(req,res);
     if (url.pathname === '/internal/runner-broker/prepare' && req.method === 'POST') return await brokerPrepare(req,res);
     if (url.pathname === '/internal/runner-broker/status' && req.method === 'POST') return await brokerRunnerStatus(req,res);
@@ -647,6 +652,17 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/health') return json(res, 200, { ok: true, org: GITHUB_ORG, github_auth_mode: GITHUB_AUTH_MODE, credential_broker_configured: GITHUB_AUTH_MODE === 'app' ? Boolean(GITHUB_APP_ID && appPrivateKey()) : Boolean(GITHUB_TOKEN), token_configured: Boolean(GITHUB_TOKEN), refresh_seconds: REFRESH_SECONDS, remote_nodes_enabled: Boolean(NODE_SHARED_SECRET), connected_nodes: nodes.size });
     if (url.pathname === '/api/overview') return json(res, 200, await getOverview());
     if (url.pathname === '/api/nodes') return json(res, 200, getNodesSummary());
+    if (url.pathname === '/api/node/scheduling' && req.method === 'POST') {
+      const raw = JSON.parse(await readBody(req, 4096));
+      const id = sanitizeNodeId(raw.id), node = nodes.get(id);
+      if (!node) return json(res, 404, { error: 'Node not found' });
+      const valid = (v, lo, hi) => Number.isInteger(v) && v >= lo && v <= hi;
+      if (!valid(raw.max_slots, 0, 128) || !valid(raw.cpu_per_slot, 1, 128) || !valid(raw.ram_gb_per_slot, 1, 512))
+        return json(res, 400, { error: 'Invalid scheduling limits' });
+      node.scheduling_policy = { max_slots: raw.max_slots, cpu_per_slot: raw.cpu_per_slot, ram_gb_per_slot: raw.ram_gb_per_slot };
+      scheduleNodePersist();
+      return json(res, 200, { ok: true, policy: node.scheduling_policy });
+    }
     if (url.pathname === '/api/node') { const id = sanitizeNodeId(url.searchParams.get('id')), node = nodes.get(id); if (!node) return json(res, 404, { error: 'Node not found' }); return json(res, 200, { node: publicNode(node), log_tail: node.log_tail || '' }); }
     if (url.pathname === '/api/node-log') { const id = sanitizeNodeId(url.searchParams.get('id')), node = nodes.get(id); if (!node) return text(res, 404, 'Node not found'); return text(res, 200, node.log_tail || 'No runner diagnostic log has been reported yet.'); }
     if (url.pathname === '/api/run') { const repo = url.searchParams.get('repo'), id = url.searchParams.get('id'); if (!repo || !id) return json(res, 400, { error: 'repo and id are required' }); return json(res, 200, await getRunDetail(repo, id)); }
