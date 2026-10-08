@@ -68,7 +68,7 @@ jobs:
             ghcr.io/nekosuneprojects/docker-github-runners-dashboard:latest
             ghcr.io/nekosuneprojects/docker-github-runners-dashboard:manual-${{ github.run_number }}
           cache-from: type=gha,scope=dashboard
-          cache-to: type=gha,mode=min,scope=dashboard
+          cache-to: type=gha,mode=max,scope=dashboard
           provenance: false
           sbom: false
 
@@ -80,10 +80,11 @@ jobs:
           file: ./node-agent/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
-          pull: true
           tags: |
             ghcr.io/nekosuneprojects/docker-github-runners-node-agent:latest
             ghcr.io/nekosuneprojects/docker-github-runners-node-agent:manual-${{ github.run_number }}
+          cache-from: type=gha,scope=agent
+          cache-to: type=gha,mode=max,scope=agent
           provenance: false
           sbom: false
 
@@ -99,6 +100,6 @@ jobs:
             ghcr.io/nekosuneprojects/docker-github-runners:latest
             ghcr.io/nekosuneprojects/docker-github-runners:manual-${{ github.run_number }}
           cache-from: type=gha,scope=runner
-          cache-to: type=gha,mode=min,scope=runner
+          cache-to: type=gha,mode=max,scope=runner
           provenance: false
           sbom: false
