@@ -17,7 +17,12 @@ const DB_FILE = process.env.DASHBOARD_DB_FILE || '/data/dashboard.sqlite';
 const CONFIG_REPOS = String(process.env.DASHBOARD_REPOS || '').split(',').map(v => v.trim()).filter(Boolean).map(v => v.includes('/') ? v.split('/').pop() : v);
 const MAX_REPOS = Math.max(1, Math.min(Number(process.env.DASHBOARD_MAX_REPOS || 100), 500));
 const SYNC_SECONDS = Math.max(60, Math.min(Number(process.env.DASHBOARD_GITHUB_WORKFLOW_SYNC_SECONDS || 180), 3600));
-const RUNS_PER_REPO = Math.max(3, Math.min(Number(process.env.DASHBOARD_GITHUB_WORKFLOW_RUNS_PER_REPO || 30), 100));
+const RUNS_PER_REPO = Math.max(3, Math.min(Number(process.env.DASHBOARD_GITHUB_WORKFLOW_RUNS_PER_REPO || 10), 100));
+const REPOS_PER_CYCLE = Math.max(1, Math.min(Number(process.env.DASHBOARD_GITHUB_WORKFLOW_REPOS_PER_CYCLE || 5), 50));
+const JOB_DETAILS_PER_CYCLE = Math.max(0, Math.min(Number(process.env.DASHBOARD_GITHUB_WORKFLOW_JOBS_PER_CYCLE || 6), 50));
+let rateLimitUntil = 0;
+let repoCursor = 0;
+let jobFetches = 0;
 const API_VERSION = '2022-11-28';
 
 fs.mkdirSync(path.dirname(DB_FILE), { recursive: true });
@@ -78,7 +83,7 @@ function appJwt(){
 }
 async function githubRequest(apiPath,token){
  const r=await fetch('https://api.github.com'+apiPath,{headers:{Accept:'application/vnd.github+json','X-GitHub-Api-Version':API_VERSION,'User-Agent':'neko-runner-dashboard-workflow-store/2.0',Authorization:'Bearer '+token},redirect:'follow'});
- if(!r.ok){const body=await r.text().catch(()=> '');throw Error('GitHub workflow sync '+r.status+': '+body.slice(0,250))}
+ if(!r.ok){const body=await r.text().catch(()=> '');if(r.status===429 || (r.status===403 && /rate.limit|quota|requests are paused/i.test(body))){const retry=Number(r.headers.get('retry-after')||0);rateLimitUntil=Math.max(rateLimitUntil,Date.now()+Math.max(60,retry||300)*1000);throw Error('GitHub workflow API quota exhausted; paused until '+new Date(rateLimitUntil).toISOString())}throw Error('GitHub workflow sync '+r.status+': '+body.slice(0,250))}
  return r.json();
 }
 async function appInstallations(){
@@ -206,6 +211,7 @@ async function syncRepo(repo) {
   for (const run of runs) upsertRun(run);
 
   for (const run of runs) {
+    if(jobFetches>=JOB_DETAILS_PER_CYCLE)break;
     const active = ['queued','in_progress','waiting','pending','requested'].includes(String(run.status));
     const jobState = db.prepare(`SELECT COUNT(*) AS total, SUM(CASE WHEN status<>'completed' THEN 1 ELSE 0 END) AS unfinished FROM github_live_jobs WHERE repo=? AND run_id=?`).get(repo, run.id) || {};
     const haveJobs = Number(jobState.total || 0) > 0;
@@ -214,6 +220,8 @@ async function syncRepo(repo) {
     // fetched again. If a run just completed while its cached job still says
     // in_progress/queued, fetch it one final time to close the timeline cleanly.
     if (!active && haveJobs && !unfinished) continue;
+    if (!active && !haveJobs) continue; // Completed runs are indexed without expensive historical job fetches.
+    jobFetches++;
     try {
       const jobs = await gh(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/actions/runs/${run.id}/jobs?per_page=100`);
       for (const job of jobs.jobs || []) upsertJob(normalizeJob(job, repo, run.id));
@@ -225,20 +233,25 @@ async function syncRepo(repo) {
 async function sync(reason='periodic', onlyRepo='') {
   if (!APP_MODE && (!GITHUB_ORG || !GITHUB_TOKEN)) return snapshot();
   if (syncing) return syncing;
+  if(rateLimitUntil>Date.now())return snapshot();
   syncing = (async () => {
     const attempt = new Date().toISOString();
     db.prepare('UPDATE github_workflow_sync_state SET last_attempt_at=?,last_error=? WHERE singleton=1').run(attempt, '');
     try {
       const repos = onlyRepo ? [onlyRepo.includes('/')?onlyRepo:GITHUB_ORG+'/'+onlyRepo] : await reposToSync();
       upsertRepos(repos, attempt);
-      for (const repo of repos) {
+      const selected=onlyRepo?repos:Array.from({length:Math.min(REPOS_PER_CYCLE,repos.length)},(_,i)=>repos[(repoCursor+i)%repos.length]);
+      if(!onlyRepo && repos.length)repoCursor=(repoCursor+selected.length)%repos.length;
+      jobFetches=0;
+      for (const repo of selected) {
+        if(rateLimitUntil>Date.now())break;
         try { await syncRepo(repo); }
-        catch (err) { console.warn(`[workflow-store] ${repo}: ${err.message}`); }
+        catch (err) { console.warn(`[workflow-store] ${repo}: ${err.message}`); if(rateLimitUntil>Date.now())break; }
       }
       const now = new Date().toISOString();
-      db.prepare('UPDATE github_workflow_sync_state SET last_success_at=?,last_error=?,repos_synced=? WHERE singleton=1').run(now, '', repos.length);
+      db.prepare('UPDATE github_workflow_sync_state SET last_success_at=?,last_error=?,repos_synced=? WHERE singleton=1').run(now, rateLimitUntil>Date.now()?'GitHub API quota paused until '+new Date(rateLimitUntil).toISOString():'', selected.length);
       const snap = emitIfChanged(reason);
-      console.log(`[workflow-store] sync ${reason}: repos=${repos.length} runs=${snap.runs.length} active_jobs=${snap.active_jobs.length}`);
+      console.log(`[workflow-store] sync ${reason}: scanned=${selected.length}/${repos.length} runs=${snap.runs.length} active_jobs=${snap.active_jobs.length}`);
       return snap;
     } catch (err) {
       db.prepare('UPDATE github_workflow_sync_state SET last_error=? WHERE singleton=1').run(err.message);
