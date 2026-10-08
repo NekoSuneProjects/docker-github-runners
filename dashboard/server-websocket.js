@@ -31,6 +31,39 @@ function nodeOnline(lastSeen){const t=Date.parse(lastSeen||'');return Number.isF
 function json(res,status,value){const body=JSON.stringify(value);res.writeHead(status,{'content-type':'application/json; charset=utf-8','cache-control':'no-store','x-content-type-options':'nosniff','content-length':Buffer.byteLength(body)});res.end(body)}
 function readBody(req,max=1024*1024){return new Promise((resolve,reject)=>{let n=0;const chunks=[];req.on('data',c=>{n+=c.length;if(n>max){reject(new Error('Request too large'));req.destroy();return}chunks.push(c)});req.on('end',()=>resolve(Buffer.concat(chunks)));req.on('error',reject)})}
 
+
+db.exec("CREATE TABLE IF NOT EXISTS github_webhook_deliveries (id INTEGER PRIMARY KEY AUTOINCREMENT, delivery_id TEXT UNIQUE, received_at TEXT NOT NULL, event TEXT NOT NULL, action TEXT, repository TEXT, sender TEXT, status TEXT NOT NULL, json TEXT NOT NULL)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_github_webhook_deliveries_time ON github_webhook_deliveries(received_at DESC)");
+function safeWebhookPayload(value,depth=0){
+ if(depth>15)return '[TRUNCATED DEPTH]';
+ if(Array.isArray(value))return value.slice(0,400).map(v=>safeWebhookPayload(v,depth+1));
+ if(value&&typeof value==='object'){
+  const result={};
+  for(const [key,val] of Object.entries(value).slice(0,500)){
+   if(/token|secret|password|private.?key|authorization|cookie|credential|client_secret/i.test(key)){result[key]='[REDACTED]';continue}
+   result[key]=safeWebhookPayload(val,depth+1);
+  }
+  return result;
+ }
+ if(typeof value==='string')return value.length>16000?value.slice(0,16000)+'...[TRUNCATED]':value;
+ return value;
+}
+function webhookDeliveries(limit=100){
+ return db.prepare("SELECT id,delivery_id,received_at,event,action,repository,sender,status,json FROM github_webhook_deliveries ORDER BY id DESC LIMIT ?").all(limit)
+ .map(r=>({...r,payload:parseJson(r.json,{}),json:undefined}));
+}
+function recordWebhook(req,event,payload){
+ const delivery=String(req.headers['x-github-delivery']||'').slice(0,100);
+ const repository=String(payload?.repository?.full_name||'').slice(0,200);
+ const action=String(payload?.action||'').slice(0,100);
+ const sender=String(payload?.sender?.login||'').slice(0,150);
+ const raw=JSON.stringify(safeWebhookPayload(payload));
+ const content=raw.length>262144?JSON.stringify({notice:'Payload too large; omitted from stored history',repository,action}):raw;
+ db.prepare("INSERT OR IGNORE INTO github_webhook_deliveries(delivery_id,received_at,event,action,repository,sender,status,json) VALUES(?,?,?,?,?,?,?,?)")
+ .run(delivery||null,new Date().toISOString(),String(event).slice(0,100),action,repository,sender,'verified',content);
+ db.prepare("DELETE FROM github_webhook_deliveries WHERE id NOT IN (SELECT id FROM github_webhook_deliveries ORDER BY id DESC LIMIT 500)").run();
+ broadcast('webhook-deliveries',{deliveries:webhookDeliveries(100)});
+}
 function nodeSnapshot(){
   let rows=[];try{rows=db.prepare('SELECT * FROM nodes ORDER BY name COLLATE NOCASE').all()}catch{}
   const nodes=rows.map(r=>({
@@ -92,6 +125,7 @@ async function handleWebhook(req,res){
   if(!equal(supplied,expected))return json(res,401,{error:'Invalid GitHub webhook signature'});
   let payload;try{payload=JSON.parse(body.toString('utf8')||'{}')}catch{return json(res,400,{error:'Invalid webhook JSON'})}
   const event=String(req.headers['x-github-event']||'unknown');
+  recordWebhook(req,event,payload);
   console.log('[github-webhook] verified delivery: event='+event+' action='+String(payload?.action||'')+' repo='+String(payload?.repository?.full_name||'').slice(0,180));
   if(['workflow_job','workflow_run','check_run','ping'].includes(event)){
     process.emit('neko:github-webhook',payload);
@@ -105,6 +139,10 @@ http.createServer=function websocketCreateServer(listener){
     let url;try{url=new URL(req.url,'http://localhost')}catch{url=new URL('http://localhost/')}
     if(url.pathname==='/api/github/webhook'&&req.method==='POST'){
       try{return await handleWebhook(req,res)}catch(err){return json(res,400,{error:err.message})}
+    }
+    if(url.pathname==='/api/github/webhook-deliveries'&&req.method==='GET'){
+      if(!authenticated(req))return json(res,401,{error:'Authentication required'});
+      return json(res,200,{deliveries:webhookDeliveries(100)});
     }
     const pushNodes=['/internal/nodes/heartbeat','/api/node/settings','/api/node/cleanup','/api/node/delete'].includes(url.pathname);
     const pushControls=['/api/node/runner-control','/internal/nodes/runner-control-ack'].includes(url.pathname);
@@ -125,6 +163,7 @@ http.createServer=function websocketCreateServer(listener){
     ws.on('close',()=>clients.delete(ws));
     ws.on('error',()=>clients.delete(ws));
     send(ws,'snapshot',fullSnapshot());
+    send(ws,'webhook-deliveries',{deliveries:webhookDeliveries(100)});
   });
   server.once('close',()=>{for(const ws of clients){try{ws.close(1001,'server stopping')}catch{}}clients.clear();try{wss.close()}catch{}});
   return server;
