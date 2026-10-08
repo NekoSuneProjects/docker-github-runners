@@ -57,7 +57,7 @@ function runnerDetail(r){
  const trusted=/^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/actions\/runs\/\d+(?:\/.*)?$/.test(url);
  return `<div class="runner-detail" data-runner-detail>
  <b>Live runner activity</b>
- <div class="runner-detail-line" style="margin-top:10px"><b>Live agent console</b> · updated with each node heartbeat</div>
+ <div class="runner-detail-line" style="margin-top:10px"><b>Runner console</b> · Last actual output: ${r.console_last_output_at?ago(r.console_last_output_at):'timestamp unavailable'} · Heartbeat updates are not necessarily new log lines</div>
  <pre class="runner-console">${esc(r.console_tail||'Waiting for runner console output…')}</pre>
  <div class="runner-detail-line">Repository: <b>${esc(repo)}</b></div>
  <div class="runner-detail-line">Workflow: ${esc(run?.name||job?.workflow_name||'Not reported')}</div>
