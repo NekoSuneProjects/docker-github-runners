@@ -321,8 +321,8 @@ and cannot guarantee strict fairness or immediate scheduling.
 
 The dashboard displays the agent-reported capacity and per-slot resource policy.
 Change these values in the worker's environment and redeploy the agent.
-Avoid recreating the fleet agent while runners are busy: fleet shutdown currently
-stops managed runner containers and may interrupt workflows.
+The updated fleet agent preserves existing managed runner containers on supervisor restart.
+Wait for active jobs to finish before an initial migration of old lock-hook runner images.
 
 **Migration:** rebuild and publish the runner and agent images before restarting
 a node. Existing runner containers must be replaced with the new runner image,
