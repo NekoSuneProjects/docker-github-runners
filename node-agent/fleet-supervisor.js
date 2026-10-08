@@ -390,7 +390,7 @@ async function detectCapabilities() {
   }
   const labels = new Set(csv(LABELS).filter(label => !/^neko-(?:any|size-(?:small|medium|large)|lite|build|heavy|gpu)$/i.test(label)));
   labels.add(`neko-size-${size}`);
-  labels.add('neko-any');
+  if (size !== 'small') labels.add('neko-any');
   if (size === 'small') labels.add('neko-lite');
   if (size === 'medium' || size === 'large') labels.add('neko-build');
   if (size === 'large') labels.add('neko-heavy');
