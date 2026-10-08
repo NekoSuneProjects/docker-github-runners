@@ -8,7 +8,6 @@ const NODE_TOKEN = process.env.DASHBOARD_NODE_SHARED_SECRET || '';
 const INTERVAL_SECONDS = Math.max(10, Math.min(Number(process.env.NODE_HEARTBEAT_SECONDS || 15), 300));
 const LOG_TAIL_BYTES = Math.max(8192, Math.min(Number(process.env.NODE_LOG_TAIL_BYTES || 131072), 524288));
 const DIAG_DIR = process.env.RUNNER_DIAG_DIR || '/runner-diag';
-const SHARED_LOCK_DIR = process.env.NODE_SHARED_LOCK_DIR || '/runner-lock';
 const HOST_ROOT = process.env.NODE_HOST_ROOT || '/host';
 const RUNNER_NAME = process.env.RUNNER_NAME || '';
 const RUNNER_SCOPE = process.env.RUNNER_SCOPE || 'organization';
@@ -56,7 +55,6 @@ function memory() { const text = readText(hostPath('proc/meminfo')), values = {}
 function cpuCount() { const text = readText(hostPath('proc/stat')); const n = text.split('\n').filter(v => /^cpu\d+\s/.test(v)).length; return n || os.cpus().length; }
 function kernel() { return readText(hostPath('proc/sys/kernel/osrelease')) || os.release(); }
 function exec(command, args, timeout = 120000) { return new Promise((resolve, reject) => execFile(command, args, { timeout, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => err ? reject(Object.assign(err, { output: `${stdout || ''}\n${stderr || ''}`.trim() })) : resolve(String(stdout || '') + String(stderr || '')))); }
-function sharedJobLocked() { try { return fs.statSync(path.join(SHARED_LOCK_DIR, 'active')).isDirectory(); } catch { return false; } }
 function parseBytes(text) { const m = String(text || '').trim().match(/^([0-9.]+)\s*([kmgtp]?b)/i); if (!m) return 0; const powers = { b:0,kb:1,mb:2,gb:3,tb:4,pb:5 }; return Number(m[1]) * 1024 ** powers[m[2].toLowerCase()]; }
 
 async function dockerStorage() {
@@ -213,7 +211,7 @@ async function payload() {
   const mem = memory();
   const docker = await dockerStorage();
   const diag = await diagStats();
-  const busy = sharedJobLocked() ? true : await runnerBusy();
+  const busy = await runnerBusy();
   const watchdog = watchdogState(busy, diag);
   const memPct = mem.total ? ((mem.total - mem.free) / mem.total) * 100 : 0;
 
@@ -259,7 +257,7 @@ async function runCleanup(action) {
   if (cleaning || recovering || !action?.id) return;
   cleaning = true;
 
-  if (sharedJobLocked() || await runnerBusy(true) === true) {
+  if (await runnerBusy(true) !== false) {
     console.log(`[cleanup] deferred ${action.id}: runner became busy`);
     cleaning = false;
     return;
