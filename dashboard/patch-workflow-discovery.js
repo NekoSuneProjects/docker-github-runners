@@ -63,7 +63,7 @@ if (!source.includes('APP_WORKFLOW_DISCOVERY_V2')) {
 }
 
 const webhookAnchor = `process.on('neko:github-webhook', payload => {`;
-const nodeListener = `${source.includes('APP_WORKFLOW_DISCOVERY_V2') ? "function normalizeRepoName(value) { const raw=String(value||'').trim(); return raw.includes('/')?raw:GITHUB_ORG+'/'+raw; }\\n" : ""}const NODE_WORKFLOW_SYNC_SECONDS = Math.max(30, Math.min(Number(process.env.DASHBOARD_NODE_WORKFLOW_SYNC_SECONDS || 60), 600));
+const nodeListener = `${source.includes('APP_WORKFLOW_DISCOVERY_V2') ? "function normalizeRepoName(value) { const raw=String(value||'').trim(); return raw.includes('/')?raw:GITHUB_ORG+'/'+raw; }\n" : ""}const NODE_WORKFLOW_SYNC_SECONDS = Math.max(30, Math.min(Number(process.env.DASHBOARD_NODE_WORKFLOW_SYNC_SECONDS || 60), 600));
 const nodeWorkflowSyncAt = new Map();
 async function syncNodeWorkload(payload) {
   if (!payload?.active) return;
