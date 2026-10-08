@@ -272,8 +272,24 @@ const timer = setInterval(() => sync('periodic').catch(() => {}), SYNC_SECONDS *
 timer.unref();
 
 process.on('neko:github-webhook', payload => {
-  const repo = payload?.repository?.full_name || payload?.repository?.name;
-  if (repo) sync('webhook', repo).catch(() => {});
+  const repo = String(payload?.repository?.full_name || '');
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) return;
+  // Signed GitHub workflow_job webhook contains the job owner, runner name,
+  // workflow run ID and job timeline. Do not waste API requests to retrieve it.
+  if (payload.workflow_job?.id && payload.workflow_job?.run_id) {
+    try {
+      const job = normalizeJob(payload.workflow_job, repo, payload.workflow_job.run_id);
+      upsertJob(job);
+      emitIfChanged('workflow-job-webhook');
+    } catch (err) { console.warn('[workflow-store] workflow_job webhook: '+err.message); }
+    return;
+  }
+  if (payload.workflow_run?.id) {
+    try {
+      upsertRun(normalizeRun(payload.workflow_run, repo));
+      emitIfChanged('workflow-run-webhook');
+    } catch (err) { console.warn('[workflow-store] workflow_run webhook: '+err.message); }
+  }
 });
 process.on('neko:runner-sync', () => {
   const rows = db.prepare('SELECT repo,run_id,json FROM github_live_jobs').all();
