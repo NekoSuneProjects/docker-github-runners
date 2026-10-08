@@ -394,6 +394,10 @@ async function ensureRunner(target, capabilities) {
     const fingerprint = await existingRunnerFingerprint(id);
     if (fingerprint !== capabilities.fingerprint) {
       console.log(`[fleet] recreating ${targetKey(target)}: capacity labels changed`);
+      if (await remoteRunnerBusy(target, name)) {
+        console.log(`[fleet] deferring image/label change for busy runner ${name}`);
+        return;
+      }
       await exec('docker', ['rm', '-f', id], 60000);
       await removeRemoteRunner(target, name);
       id = '';
@@ -456,10 +460,16 @@ async function removeUnknownRunners(desired, targetByKey) {
     const key = String(parts.shift() || '').trim().toLowerCase();
     const name = String(parts.join(' ') || '').trim();
     if (!key || desired.has(key)) continue;
-    console.log(`[fleet] removing no-longer-managed runner ${key}`);
-    await exec('docker', ['rm', '-f', id], 60000).catch(() => {});
+    console.log(`[fleet] checking no-longer-managed runner ${key}`);
     const target = targetByKey.get(key) || targetFromKey(key);
-    if (target && name) await removeRemoteRunner(target, name);
+    if (!target || !name) continue;
+    try {
+      if (await remoteRunnerBusy(target, name)) continue;
+      await exec('docker', ['rm', '-f', id], 60000);
+      await removeRemoteRunner(target, name);
+    } catch (err) {
+      console.warn(`[fleet] preserving ${name} on uncertain status: ${err.message}`);
+    }
   }
 }
 async function reconcile() {
