@@ -183,6 +183,13 @@ function upsertRun(run) {
     .run(run.repo, run.id, run.status, run.conclusion, run.updated_at || new Date().toISOString(), JSON.stringify(run));
 }
 function upsertJob(job) {
+  // Initial workflow_job deliveries contain steps:[]; never let that erase a
+  // timeline previously fetched from the Jobs API or a completed delivery.
+  const old=db.prepare('SELECT json FROM github_live_jobs WHERE repo=? AND job_id=?').get(job.repo,job.id);
+  if(old){
+    const previous=JSON.parse(old.json);
+    if((!job.steps||!job.steps.length)&&previous.steps?.length)job.steps=previous.steps;
+  }
   db.prepare(`INSERT INTO github_live_jobs(repo,run_id,job_id,status,conclusion,runner_name,runner_group_name,runner_type,updated_at,json) VALUES(?,?,?,?,?,?,?,?,?,?)
     ON CONFLICT(repo,job_id) DO UPDATE SET run_id=excluded.run_id,status=excluded.status,conclusion=excluded.conclusion,runner_name=excluded.runner_name,runner_group_name=excluded.runner_group_name,runner_type=excluded.runner_type,updated_at=excluded.updated_at,json=excluded.json`)
     .run(job.repo, job.run_id, job.id, job.status, job.conclusion, job.runner_name, job.runner_group_name, job.runner_type, new Date().toISOString(), JSON.stringify(job));
@@ -267,6 +274,39 @@ async function sync(reason='periodic', onlyRepo='') {
   return syncing;
 }
 
+// Only poll jobs already known from signed webhooks. GitHub does not send
+// per-step webhook updates: live steps are exposed by the authenticated Jobs API.
+const STEP_POLL_MS=Math.max(30000,Math.min(Number(process.env.DASHBOARD_GITHUB_STEP_POLL_SECONDS||60)*1000,300000));
+const STEP_POLL_LIMIT=Math.max(1,Math.min(Number(process.env.DASHBOARD_GITHUB_STEP_POLL_JOBS||2),5));
+let stepPolling=false,stepCursor=0;
+async function refreshActiveSteps(){
+ if(stepPolling||rateLimitUntil>Date.now())return;
+ const running=db.prepare("SELECT repo,run_id,job_id,json FROM github_live_jobs WHERE status='in_progress' ORDER BY updated_at DESC LIMIT 30").all();
+ if(!running.length)return;
+ stepPolling=true;
+ try{
+  const count=Math.min(STEP_POLL_LIMIT,running.length);
+  for(let i=0;i<count;i++){
+   const row=running[(stepCursor+i)%running.length];
+   try{
+    const [owner,repo]=row.repo.split('/');
+    if(!owner||!repo)continue;
+    // Unique query per poll bypasses the general metadata cache's 300s TTL.
+    // Rate is bounded by STEP_POLL_MS and STEP_POLL_LIMIT.
+    const data=await gh(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/jobs/${row.job_id}?neko_step_refresh=${Math.floor(Date.now()/STEP_POLL_MS)}`);
+    if(Number(data.id)!==Number(row.job_id))continue;
+    upsertJob(normalizeJob(data,row.repo,row.run_id));
+   }catch(err){
+    console.warn('[workflow-store] live steps '+row.repo+'#'+row.job_id+': '+err.message);
+    if(rateLimitUntil>Date.now())break;
+   }
+  }
+  stepCursor=(stepCursor+count)%running.length;
+  emitIfChanged('live-step-poll');
+ }finally{stepPolling=false}
+}
+const stepTimer=setInterval(()=>refreshActiveSteps().catch(err=>console.warn('[workflow-store] step poll: '+err.message)),STEP_POLL_MS);
+stepTimer.unref();
 setTimeout(() => sync('startup').catch(() => {}), 2500).unref();
 const timer = setInterval(() => sync('periodic').catch(() => {}), SYNC_SECONDS * 1000);
 timer.unref();
